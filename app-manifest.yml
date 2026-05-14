@@ -1,0 +1,9 @@
+version: '1.0.0'
+app:
+  name: Order Processing Monday
+  features:
+    - type: AppFeatureItemView
+      name: Order Processing
+      build:
+        source: customUrl
+        suffix: "/view"

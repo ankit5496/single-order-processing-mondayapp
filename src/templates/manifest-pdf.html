@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Shiprocket Manifest</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            margin: 20px;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+        }
+        .logo {
+            width: 150px;
+        }
+        .title {
+            text-align: center;
+            margin-top: 10px;
+            font-size: 20px;
+            font-weight: bold;
+        }
+        .manifest-info {
+            text-align: right;
+            margin-top: -59px;
+        }
+        .section {
+            margin-top: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        table, th, td {
+            border: 1px solid #333;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+        }
+        .barcode {
+            text-align: center;
+        }
+        .to-be-filled {
+            border-top: 1px dashed #333;
+            border-bottom: 1px dashed #333;
+            margin-top: 20px;
+            padding: 10px 0;
+            font-weight: bold;
+            text-align: center;
+        }
+        .filled-section {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+        }
+        .filled-left, .filled-right {
+            width: 48%;
+        }
+        .footer {
+            margin-top: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <img src="https://d1qb2nb5cznatu.cloudfront.net/startups/i/4209958-9554dc157620f5420c9cf9f35456d72-medium_jpg.jpg" alt="Logo" class="logo">
+    </div>
+
+    <div class="title">Manifest</div>
+    <p>Generated on: {{{current_datetime}}}</p>
+    <p><strong>Seller:</strong> {{{supplierName}}}<br>
+    <strong>Courier:</strong> {{{courierName}}}</p>
+
+    <div class="manifest-info">
+        <p>Manifest ID : MANIFEST-0265</p>
+        <p>Total shipments to dispatch : 1</p>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th></th>
+                <th>S.no</th>
+                <th>Order no</th>
+                <th>Awb no</th>
+                <th>Contents</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{#each orders}}
+            <tr>
+                <td><input type="checkbox"></td>
+                <td>{{@index}}</td>
+                <td>{{this.order_no}}</td>
+                <td>{{this.awb_no}}</td>
+                <td>{{this.contents}}</td>
+            </tr>
+            {{/each}}
+        </tbody>
+    </table>
+
+    <div class="to-be-filled">
+        To Be Filled By {{{courierName}}} Executive
+    </div>
+
+    <div class="filled-section">
+        <div class="filled-left">
+            <p>Pick up time : ____________________</p>
+            <p>FE Name: ____________________</p>
+            <p>FE Signature: ____________________</p>
+            <p>FE Phone: ____________________</p>
+        </div>
+        <div class="filled-right">
+            <p>Total items picked: ____________________</p>
+            <p>Seller Name: {{{supplierName}}}</p>
+            <p>Seller Signature: ____________________</p>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>{{{supplierAddress}}}<br>
+        <strong>Contact:</strong> {{{supplierPhone}}}</p>
+        <p>This is a system generated document</p>
+    </div>
+</body>
+</html>

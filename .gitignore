@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Build output
+dist/
+client/build/
+tsconfig.tsbuildinfo
+
+# Environment files (keep .env.example if you have one)
+.env
+.env.local
+.env.production
+client/.env
+client/.env.production
+
+# Cache
+.cache/
+puppeteer.config.cjs
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Monday
+code.tar.gz

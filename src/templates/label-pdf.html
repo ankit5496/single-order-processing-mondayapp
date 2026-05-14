@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Shipping Label</title>
+  <style>
+    @page {
+    size: A4; /* or "100mm 150mm" for shipping label size */
+    margin: 10mm;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    .label-container {
+      border: 2px solid black;
+      padding: 10px;
+      width: 700px;
+      margin: auto;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px solid black;
+      padding: 5px;
+    }
+    .col {
+      width: 48%;
+    }
+    .section {
+      border-bottom: 1px solid black;
+      padding: 5px;
+    }
+    .barcode {
+      height: 40px;
+      background: repeating-linear-gradient(
+        to right,
+        black 0px,
+        black 2px,
+        white 2px,
+        white 4px
+      );
+      margin: 5px 0;
+      width: 10rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+    table, th, td {
+      border: 1px solid black;
+    }
+    th, td {
+      padding: 5px;
+      text-align: center;
+      font-size: 14px;
+    }
+    .footer {
+      margin-top: 10px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="label-container">
+    <!-- Deliver To / Shipped By -->
+    <div class="row">
+      <div class="col">
+        <strong>DELIVER To:</strong><br>
+        {{{customer.name}}} <br>
+        SKYWAY-2 Vidhyadhar Nagar Sector 2 <br>
+        Jaipur, Rajasthan, 302039 <br>
+        MOBILE NO.: 9414870512
+      </div>
+      <div class="col">
+        <strong>Shipped By (If undelivered, return to):</strong><br>
+        {{{supplierAddress}}} <br>
+        Mobile No: {{{supplierPhone}}}
+      </div>
+    </div>
+
+    <!-- Order & Barcode -->
+    <div class="section">
+      <strong>ORDER #: SP1418</strong>
+      <div class="barcode"></div>
+    </div>
+
+    <!-- Weight / Dimensions / COD -->
+    <div class="section">
+      WEIGHT: {{{product.weight}}} | DIMENSIONS: 29×26×23 (cm) <br>
+      <strong>CASH ON DELIVERY</strong> <br>
+      <strong>COLLECT COD - Rs. {{{product.total_price}}}</strong>
+    </div>
+
+    <!-- Courier -->
+    <div class="section">
+      {{{courierName}}} <br>
+      AWB #: I43160151
+      <div class="barcode"></div>
+    </div>
+
+    <!-- Items Table -->
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>ITEM</th>
+          <th>QTY</th>
+          <th>PRICE</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>{{{product.sku}}}</td>
+          <td>{{{product.name}}}</td>
+          <td>{{{product.quantity}}}</td>
+          <td>Rs. {{{product.unit_price}}}</td>
+        </tr>
+        <tr>
+          <td colspan="3"><strong>TOTAL: Rs. {{{product.total_price}}}</strong></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- Invoice -->
+    <div class="section">
+      Invoice No.: Retail00144 | Invoice Date: 2025-05-23 05:23:32
+    </div>
+
+    <!-- Terms -->
+    <div class="footer">
+      <strong>TERMS AND CONDITIONS:</strong><br>
+      1. Visit official website of DTDC Surface 2kg to view the Conditions of Carriage.<br>
+      2. Shipping charges are inclusive of service tax and all figures are in INR.<br>
+      3. All disputes will be resolved under Delhi jurisdiction.<br>
+      4. Sold goods are eligible for return or exchange according to the store's policy.<br><br>
+      THIS IS AN AUTO-GENERATED LABEL AND DOES NOT NEED SIGNATURE.
+    </div>
+  </div>
+</body>
+</html>
