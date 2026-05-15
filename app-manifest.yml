@@ -7,3 +7,8 @@ app:
       build:
         source: customUrl
         suffix: "/view"
+    - type: AppFeatureItemView
+      name: Order Tracking
+      build:
+        source: customUrl
+        suffix: "/tracking"

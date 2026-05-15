@@ -97,6 +97,10 @@ app.get('/view', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'client', 'build', 'index.html'));
 });
 
+app.get('/tracking', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'client', 'build', 'index.html'));
+});
+
 app.get('/', (_req, res) => res.redirect('/view'));
 
 app.listen(port, () => console.log(`Server running on port ${port}`));
