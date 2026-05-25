@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
-const FormData = require('form-data');
+// const FormData = require('form-data');
 const { PDFDocument } = require('pdf-lib');
 const PDFKit = require('pdfkit');
 
@@ -14,9 +13,10 @@ const {
   getLinkedItemIds,
   sortSuppliersDirectAsync,
   getEnv,
+  getApiKey,
+  resolveMondayToken,
 } = require('./mondayUtils');
 
-const MONDAY_API_KEY = () => getEnv('MONDAY_API_KEY');
 const ORDER_LINE_ITEMS_BOARD_ID = () => getEnv('ORDER_LINE_ITEMS_BOARD_ID');
 const SUPPLIER_MANIFEST_BOARD_ID = () => getEnv('SUPPLIER_MANIFEST_BOARD_ID');
 const SUPPLIER_PRODUCT_BOARD_ID = () => getEnv('SUPPLIER_PRODUCT_BOARD_ID');
@@ -41,7 +41,7 @@ function getISTDatetime() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MANIFEST PDF  (matches manifest-pdf.html exactly)
+// MANIFEST PDF
 // ─────────────────────────────────────────────────────────────────────────────
 function generateManifestPdf(data) {
   return new Promise((resolve, reject) => {
@@ -51,26 +51,21 @@ function generateManifestPdf(data) {
     doc.on('end', () => resolve(Buffer.concat(buffers)));
     doc.on('error', reject);
 
-    const L = 20;                          // left margin  (matches body margin:20px)
-    const pageW = doc.page.width - 40;    // usable width (A4 595 - 40 = 555)
+    const L = 20;
+    const pageW = doc.page.width - 40;
 
-    // ── Logo row (header) ──────────────────────────────────────────────────
-    // HTML uses an <img> – we draw a placeholder rectangle with "LOGO" text
     doc.rect(L, 20, 100, 40).stroke('#cccccc');
     doc.fontSize(10).font('Helvetica').fillColor('#888888')
       .text('LOGO', L + 30, 33, { width: 40, align: 'center' });
 
-    // ── Title ──────────────────────────────────────────────────────────────
     let y = 75;
     doc.fontSize(20).font('Helvetica-Bold').fillColor('black')
       .text('Manifest', L, y, { align: 'center', width: pageW });
 
-    // ── Generated on ──────────────────────────────────────────────────────
     y += 28;
     doc.fontSize(12).font('Helvetica').fillColor('black')
       .text(`Generated on: ${data.current_datetime}`, L, y);
 
-    // ── Seller / Courier (left) + Manifest info (right, margin-top:-59px) ─
     y += 18;
     const sellerY = y;
     doc.fontSize(12).font('Helvetica-Bold').text('Seller: ', L, sellerY, { continued: true });
@@ -78,20 +73,16 @@ function generateManifestPdf(data) {
     doc.fontSize(12).font('Helvetica-Bold').text('Courier: ', L, sellerY + 18, { continued: true });
     doc.font('Helvetica').text(data.courierName || '');
 
-    // Manifest info – right-aligned block (mirrors .manifest-info { text-align:right })
     doc.fontSize(12).font('Helvetica')
       .text('Manifest ID : MANIFEST-0265', L, sellerY, { align: 'right', width: pageW });
     doc.text(`Total shipments to dispatch : ${data.orders.length}`, L, sellerY + 18, { align: 'right', width: pageW });
 
-    // ── Orders Table ──────────────────────────────────────────────────────
     y = sellerY + 50;
 
-    // Column widths matching HTML proportions: '', S.no, Order no, Awb no, Contents
-    const colW   = [28, 45, 100, 100, pageW - 28 - 45 - 100 - 100]; // last col fills rest
+    const colW = [28, 45, 100, 100, pageW - 28 - 45 - 100 - 100];
     const headers = ['', 'S.no', 'Order no', 'Awb no', 'Contents'];
-    const rowH   = 28;
+    const rowH = 28;
 
-    // Header row (th style: padding 8px, border 1px solid #333, grey fill implied)
     doc.font('Helvetica-Bold').fontSize(10);
     let x = L;
     headers.forEach((h, i) => {
@@ -101,19 +92,17 @@ function generateManifestPdf(data) {
     });
     y += rowH;
 
-    // Data rows
     doc.font('Helvetica').fontSize(10);
     data.orders.forEach((order, idx) => {
       x = L;
-      // Checkbox column: draw a small square (HTML uses <input type="checkbox">)
-      doc.rect(x + 6, y + 7, 12, 12).stroke('#333333');   // checkbox square
+      doc.rect(x + 6, y + 7, 12, 12).stroke('#333333');
       doc.rect(x, y, colW[0], rowH).stroke('#333333');
       x += colW[0];
 
       const vals = [
-        String(idx + 1),           // S.no  (HTML uses {{@index}} which is 0-based; +1 to be human-friendly)
+        String(idx + 1),
         order.order_no || 'N/A',
-        order.awb_no   || 'N/A',
+        order.awb_no || 'N/A',
         order.contents || '',
       ];
       vals.forEach((v, i) => {
@@ -126,8 +115,6 @@ function generateManifestPdf(data) {
 
     y += 20;
 
-    // ── To Be Filled section ──────────────────────────────────────────────
-    // border-top / border-bottom: 1px dashed #333
     doc.moveTo(L, y).lineTo(L + pageW, y).dash(4, { space: 3 }).stroke('#333333');
     y += 8;
     doc.undash();
@@ -138,31 +125,24 @@ function generateManifestPdf(data) {
     y += 14;
     doc.undash();
 
-    // Two-column filled section (matches .filled-left / .filled-right, width 48%)
-    const col2W = pageW / 2 - 10;
     doc.fontSize(12).font('Helvetica').fillColor('black');
-
-    // Left column
     doc.text('Pick up time : ____________________', L, y);
-    doc.text('FE Name: ____________________',       L, y + 20);
-    doc.text('FE Signature: ____________________',  L, y + 40);
-    doc.text('FE Phone: ____________________',      L, y + 60);
+    doc.text('FE Name: ____________________', L, y + 20);
+    doc.text('FE Signature: ____________________', L, y + 40);
+    doc.text('FE Phone: ____________________', L, y + 60);
 
-    // Right column
     const R = L + pageW / 2 + 10;
     doc.text('Total items picked: ____________________', R, y);
-    doc.text(`Seller Name: ${data.supplierName || ''}`,  R, y + 20);
-    doc.text('Seller Signature: ____________________',   R, y + 40);
+    doc.text(`Seller Name: ${data.supplierName || ''}`, R, y + 20);
+    doc.text('Seller Signature: ____________________', R, y + 40);
 
     y += 90;
 
-    // ── Footer ────────────────────────────────────────────────────────────
     if (data.supplierAddress) {
       doc.fontSize(11).font('Helvetica').fillColor('black')
         .text(data.supplierAddress, L, y, { align: 'center', width: pageW });
       y += 18;
     }
-    // Only render "Contact:" line when a phone number is actually present
     if (data.supplierPhone && data.supplierPhone.trim()) {
       doc.fontSize(11).font('Helvetica-Bold').fillColor('black')
         .text('Contact: ', L, y, { continued: true });
@@ -177,7 +157,7 @@ function generateManifestPdf(data) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LABEL PDF  (matches label-pdf.html exactly)
+// LABEL PDF
 // ─────────────────────────────────────────────────────────────────────────────
 function generateLabelPdf(data) {
   return new Promise((resolve, reject) => {
@@ -187,36 +167,28 @@ function generateLabelPdf(data) {
     doc.on('end', () => resolve(Buffer.concat(buffers)));
     doc.on('error', reject);
 
-    // HTML .label-container { width:700px } scaled to A4 usable width
-    const L       = 20;
-    const pageW   = doc.page.width - 40;   // ~555pt on A4
+    const L = 20;
+    const pageW = doc.page.width - 40;
     const borderY = 20;
-    let y         = borderY;
+    let y = borderY;
 
-    // ── Outer border (matches border: 2px solid black on .label-container) ─
     const totalHeight = 570;
     doc.rect(L, y, pageW, totalHeight).lineWidth(2).stroke('black');
-    doc.lineWidth(1); // reset
+    doc.lineWidth(1);
 
-    // ── Row 1: DELIVER TO / Shipped By ───────────────────────────────────
-    // .row { display:flex; justify-content:space-between; border-bottom:1px solid black; padding:5px }
-    // .col { width:48% }
-    const rowPad  = 8;
-    const colW    = pageW / 2 - 1;   // two equal halves, -1 for divider
-    const row1H   = 90;
+    const rowPad = 8;
+    const colW = pageW / 2 - 1;
+    const row1H = 90;
 
-    // Left col – DELIVER TO
     doc.fontSize(11).font('Helvetica-Bold').fillColor('black')
       .text('DELIVER TO:', L + rowPad, y + rowPad);
     doc.fontSize(10).font('Helvetica')
-      .text(data.customer?.name    || '',    L + rowPad, y + 22, { width: colW - rowPad });
-    doc.text(data.customer?.address || '',   L + rowPad, y + 36, { width: colW - rowPad });
+      .text(data.customer?.name || '', L + rowPad, y + 22, { width: colW - rowPad });
+    doc.text(data.customer?.address || '', L + rowPad, y + 36, { width: colW - rowPad });
     doc.text(`MOBILE NO.: ${data.customer?.phone || ''}`, L + rowPad, y + 66, { width: colW - rowPad });
 
-    // Vertical divider
     doc.moveTo(L + colW, y + 1).lineTo(L + colW, y + row1H - 1).stroke('black');
 
-    // Right col – Shipped By
     const rx = L + colW + rowPad;
     doc.fontSize(10).font('Helvetica-Bold')
       .text('Shipped By (If undelivered, return to):', rx, y + rowPad, { width: colW - rowPad });
@@ -224,22 +196,17 @@ function generateLabelPdf(data) {
       .text(data.supplierAddress || '', rx, y + 32, { width: colW - rowPad });
     doc.text(`Mobile No: ${data.supplierPhone || ''}`, rx, y + 62, { width: colW - rowPad });
 
-    // Row 1 bottom border
     y += row1H;
     doc.moveTo(L, y).lineTo(L + pageW, y).stroke('black');
 
-    // ── Row 2: ORDER # + barcode ──────────────────────────────────────────
-    // .section { border-bottom: 1px solid black; padding: 5px }
     const row2H = 75;
     doc.fontSize(13).font('Helvetica-Bold').fillColor('black')
       .text(`ORDER #: ${data.order?.order_no || 'N/A'}`, L + rowPad, y + rowPad);
 
-    // Barcode simulation (CSS repeating-linear-gradient stripe pattern → thin vertical lines)
     const bcX = L + rowPad;
     const bcY = y + 26;
-    const bcW = 160;   // ~10rem at 16px base
+    const bcW = 160;
     const bcH = 30;
-    // Draw alternating 2px black / 2px white stripes
     for (let bx = bcX; bx < bcX + bcW; bx += 4) {
       doc.rect(bx, bcY, 2, bcH).fill('black');
     }
@@ -247,7 +214,6 @@ function generateLabelPdf(data) {
     y += row2H;
     doc.moveTo(L, y).lineTo(L + pageW, y).stroke('black');
 
-    // ── Row 3: Weight / COD ──────────────────────────────────────────────
     const row3H = 70;
     doc.fontSize(11).font('Helvetica').fillColor('black')
       .text(`WEIGHT: ${data.product?.weight || 'N/A'} | DIMENSIONS: N/A`, L + rowPad, y + rowPad);
@@ -259,14 +225,12 @@ function generateLabelPdf(data) {
     y += row3H;
     doc.moveTo(L, y).lineTo(L + pageW, y).stroke('black');
 
-    // ── Row 4: Courier + AWB barcode ─────────────────────────────────────
     const row4H = 70;
     doc.fontSize(13).font('Helvetica-Bold').fillColor('black')
       .text(data.courierName || '', L + rowPad, y + rowPad);
     doc.fontSize(10).font('Helvetica')
       .text(`AWB #: ${data.order?.awb_no || 'N/A'}`, L + rowPad, y + 22);
 
-    // Second barcode
     const bc2X = L + rowPad;
     const bc2Y = y + 38;
     for (let bx = bc2X; bx < bc2X + 160; bx += 4) {
@@ -276,18 +240,15 @@ function generateLabelPdf(data) {
     y += row4H;
     doc.moveTo(L, y).lineTo(L + pageW, y).stroke('black');
 
-    // ── Row 5: Items Table ────────────────────────────────────────────────
-    // SKU 25%, ITEM 40%, QTY 12%, PRICE 23% — wider SKU so long codes don't wrap
     const tW = [
-      Math.round(pageW * 0.25),   // SKU  – widened from 15% → 25%
-      Math.round(pageW * 0.40),   // ITEM – adjusted from 50% → 40%
-      Math.round(pageW * 0.12),   // QTY
-      pageW - Math.round(pageW * 0.25) - Math.round(pageW * 0.40) - Math.round(pageW * 0.12), // PRICE fills rest
+      Math.round(pageW * 0.25),
+      Math.round(pageW * 0.40),
+      Math.round(pageW * 0.12),
+      pageW - Math.round(pageW * 0.25) - Math.round(pageW * 0.40) - Math.round(pageW * 0.12),
     ];
     const tHeaders = ['SKU', 'ITEM', 'QTY', 'PRICE'];
-    const tRowH    = 24;
+    const tRowH = 24;
 
-    // Header row
     doc.font('Helvetica-Bold').fontSize(10);
     let tx = L;
     tHeaders.forEach((h, i) => {
@@ -297,14 +258,13 @@ function generateLabelPdf(data) {
     });
     y += tRowH;
 
-    // Data row
     tx = L;
     doc.font('Helvetica').fontSize(10);
     const dataVals = [
-      data.product?.sku      || '',
-      data.product?.name     || '',
+      data.product?.sku || '',
+      data.product?.name || '',
       String(data.product?.quantity || ''),
-      `Rs. ${data.product?.unit_price || '0'}`,
+      `Rs. ${data.product?.total_price || '0'}`,
     ];
     dataVals.forEach((v, i) => {
       doc.rect(tx, y, tW[i], tRowH).stroke('#333333');
@@ -313,23 +273,16 @@ function generateLabelPdf(data) {
     });
     y += tRowH;
 
-    // Total row layout (matches image):
-    //   Cell 1: SKU+ITEM merged → "TOTAL:" left-aligned
-    //   Cell 2: QTY column      → empty (blank cell below QTY)
-    //   Cell 3: PRICE column    → total amount centered (same style as PRICE data cell)
-    const totalLabelW = tW[0] + tW[1];   // spans SKU + ITEM only
-    const totalQtyW   = tW[2];            // blank cell under QTY
-    const totalValW   = tW[3];            // centered amount under PRICE
+    const totalLabelW = tW[0] + tW[1];
+    const totalQtyW = tW[2];
+    const totalValW = tW[3];
 
-    // TOTAL: label cell (SKU+ITEM)
     doc.rect(L, y, totalLabelW, tRowH).stroke('#333333');
     doc.fontSize(10).font('Helvetica-Bold').fillColor('black')
       .text('TOTAL:', L + 4, y + 7, { width: totalLabelW - 8, align: 'left', lineBreak: false });
 
-    // Blank QTY cell
     doc.rect(L + totalLabelW, y, totalQtyW, tRowH).stroke('#333333');
 
-    // Price amount cell — centered, bold, matching the PRICE column above
     doc.rect(L + totalLabelW + totalQtyW, y, totalValW, tRowH).stroke('#333333');
     doc.fontSize(10).font('Helvetica-Bold').fillColor('black')
       .text(
@@ -341,7 +294,6 @@ function generateLabelPdf(data) {
 
     doc.moveTo(L, y).lineTo(L + pageW, y).stroke('black');
 
-    // ── Row 6: Invoice No. + Invoice Date (matches image: "Invoice No.: Retail00144 | Invoice Date: …") ──
     const row6H = 28;
     doc.fontSize(10).font('Helvetica').fillColor('black')
       .text(
@@ -352,9 +304,8 @@ function generateLabelPdf(data) {
     y += row6H;
     doc.moveTo(L, y).lineTo(L + pageW, y).stroke('black');
 
-    // ── Footer: Terms (font-size 10, line-height ~16pt — matches image) ───
     const termsPad = 10;
-    const termsLineH = 16;   // matches visible spacing in the image
+    const termsLineH = 16;
     let ty = y + termsPad;
 
     doc.fontSize(10).font('Helvetica-Bold').fillColor('black')
@@ -373,7 +324,7 @@ function generateLabelPdf(data) {
       ty += termsLineH;
     });
 
-    ty += termsLineH;   // blank line gap before the auto-generated notice (matches image)
+    ty += termsLineH;
     doc.fontSize(10).font('Helvetica').fillColor('black')
       .text(
         'THIS IS AN AUTO-GENERATED LABEL AND DOES NOT NEED SIGNATURE.',
@@ -399,16 +350,17 @@ async function mergePdfs(pdfBuffers) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shiprocket helpers (unchanged)
+// Shiprocket helpers
 // ─────────────────────────────────────────────────────────────────────────────
 async function generateToken(email, password) {
   try {
-    const res = await axios.post(
-      'https://apiv2.shiprocket.in/v1/external/auth/login',
-      { email, password },
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-    return { success: true, token: res.data.token };
+    const response = await fetch('https://apiv2.shiprocket.in/v1/external/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await response.json();
+    return { success: response.ok, token: data.token, error: data.message };
   } catch (e) {
     return { success: false, token: null, error: e.message };
   }
@@ -418,38 +370,60 @@ async function checkCourierServiceability(pickupPincode, deliveryPincode, weight
   const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
   if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
   const url = `https://apiv2.shiprocket.in/v1/external/courier/serviceability/?pickup_postcode=${pickupPincode}&delivery_postcode=${deliveryPincode}&weight=${weight}&cod=${cod}`;
-  const res = await axios.get(url, { headers: { Authorization: `Bearer ${tokenRes.token}` } });
-  return res.data;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${tokenRes.token}` }
+  });
+  return await response.json();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Monday.com helpers (unchanged)
+// Monday.com helpers — all accept token parameter explicitly
 // ─────────────────────────────────────────────────────────────────────────────
-async function uploadFileToSupplierManifestColumn(itemId, fileBuffer, fileName, columnId) {
+async function uploadFileToSupplierManifestColumn(itemId, fileBuffer, fileName, columnId, token) {
   const query = `
     mutation add_file($file: File!, $itemId: ID!, $columnId: String!) {
       add_file_to_column(item_id: $itemId, column_id: $columnId, file: $file) { id }
     }
   `;
-  const form = new FormData();
+
+  // 1. Use the native Web FormData built into Node.js instead of the npm library
+  const form = new globalThis.FormData();
   form.append('query', query);
   form.append('variables', JSON.stringify({ file: null, itemId: String(itemId), columnId }));
   form.append('map', JSON.stringify({ pdf: ['variables.file'] }));
-  form.append('pdf', Buffer.from(fileBuffer), { filename: fileName, contentType: 'application/pdf' });
+  
+  // 2. Convert your file Buffer into a native Blob type compatible with Web FormData
+  const fileBlob = new globalThis.Blob([fileBuffer], { type: 'application/pdf' });
+  form.append('pdf', fileBlob, fileName);
 
-  const res = await axios.post('https://api.monday.com/v2/file', form, {
-    headers: { Authorization: MONDAY_API_KEY(), 'API-version': '2024-04', ...form.getHeaders() },
+  const response = await fetch('https://api.monday.com/v2/file', {
+    method: 'POST',
+    headers: {
+      Authorization: resolveMondayToken(token),
+      'API-version': '2024-04'
+      // CRITICAL: Do NOT spread form.getHeaders() here. 
+      // Native fetch automatically injects the exact multipart content-type boundary.
+    },
+    body: form
   });
-  console.log('Upload response:', JSON.stringify(res.data));
-  return res.data;
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`File upload failed with status ${response.status}: ${errorText}`);
+  }
+
+  const resData = await response.json();
+  console.log('Upload response:', JSON.stringify(resData));
+  return resData;
 }
 
-async function createSupplierManifestRecord(orders, supplierName, supplierItemId, courierName, orderLineItemIds, orderId) {
+async function createSupplierManifestRecord(orders, supplierName, supplierItemId, courierName, orderLineItemIds, orderId, token) {
   const { current_date } = getISTDatetime();
 
   const [orderColId, orderLineItemColId] = await Promise.all([
-    getColumnId(SUPPLIER_MANIFEST_BOARD_ID(), 'Order'),
-    getColumnId(SUPPLIER_MANIFEST_BOARD_ID(), 'OrderLineItem'),
+    getColumnId(SUPPLIER_MANIFEST_BOARD_ID(), 'Order', token),
+    getColumnId(SUPPLIER_MANIFEST_BOARD_ID(), 'OrderLineItem', token),
   ]);
 
   const itemName = supplierName
@@ -475,30 +449,42 @@ async function createSupplierManifestRecord(orders, supplierName, supplierItemId
     }
   `;
 
-  const res = await axios.post(
-    'https://api.monday.com/v2',
-    { query: mutation },
-    { headers: { Authorization: MONDAY_API_KEY(), 'Content-Type': 'application/json' } }
-  );
+  const response = await fetch('https://api.monday.com/v2', {
+    method: 'POST',
+    headers: {
+      Authorization: resolveMondayToken(token),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ query: mutation })
+  });
 
-  if (res.data?.errors?.length) console.error('createSupplierManifestRecord errors:', JSON.stringify(res.data.errors));
-  const itemId = res.data?.data?.create_item?.id;
-  return { success: !!itemId, id: itemId, errors: res.data?.errors || [] };
+  if (!response.ok) {
+    throw new Error(`Monday API error: ${response.status}`);
+  }
+
+  const resData = await response.json();
+  if (resData?.errors?.length) console.error('createSupplierManifestRecord errors:', JSON.stringify(resData.errors));
+  const itemId = resData?.data?.create_item?.id;
+  return { success: !!itemId, id: itemId, errors: resData?.errors || [] };
 }
 
-async function updateOrderLineItem(itemId, status, supplierId, supplierName, courierId, courierName, boardId) {
-  const [courierIdColId, courierNameColId, statusColId, supplierColId] = await Promise.all([
-    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'CourierId'),
-    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Courier Name'),
-    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Status'),
-    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Supplier'),
+async function updateOrderLineItem(itemId, status, supplierId, supplierName, courierId, courierName, boardId, manifestRecordId, token) {
+  const [courierIdColId, courierNameColId, statusColId, supplierColId, supplierManifestColId] = await Promise.all([
+    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'CourierId', token),
+    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Courier Name', token),
+    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Status', token),
+    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Supplier', token),
+    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'SupplierManifest', token),
   ]);
 
   const columnValues = {};
   if (statusColId && status) columnValues[statusColId] = { label: status };
-  if (supplierColId && supplierId) columnValues[supplierColId] = { item_ids: [String(supplierId)] };
+  if (supplierColId && supplierId) columnValues[supplierColId] = { linkedPulseIds: [{ linkedPulseId: Number(supplierId) }] };
   if (courierIdColId && courierId) columnValues[courierIdColId] = String(courierId);
   if (courierNameColId && courierName) columnValues[courierNameColId] = String(courierName);
+  if (supplierManifestColId && manifestRecordId) {
+    columnValues[supplierManifestColId] = { linkedPulseIds: [{ linkedPulseId: Number(manifestRecordId) }] };
+  }
 
   const mutation = `
     mutation ($itemId: ID!, $boardId: ID!, $columnValues: JSON!) {
@@ -506,30 +492,104 @@ async function updateOrderLineItem(itemId, status, supplierId, supplierName, cou
     }
   `;
 
-  const res = await axios.post(
-    'https://api.monday.com/v2',
-    { query: mutation, variables: { itemId: String(itemId), boardId: String(boardId), columnValues: JSON.stringify(columnValues) } },
-    { headers: { Authorization: MONDAY_API_KEY(), 'Content-Type': 'application/json' } }
-  );
-  return res.data;
+  const response = await fetch('https://api.monday.com/v2', {
+    method: 'POST',
+    headers: {
+      Authorization: resolveMondayToken(token),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      query: mutation,
+      variables: { itemId: String(itemId), boardId: String(boardId), columnValues: JSON.stringify(columnValues) }
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Monday API error: ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+async function updateOrderStatus(orderId, status, token) {
+  try {
+    const statusColId = await getColumnId(getEnv('ORDERS_BOARD_ID'), 'Status', token);
+    if (!statusColId) { console.warn('[updateOrderStatus] Status column not found'); return; }
+    const columnValues = JSON.stringify({ [statusColId]: { label: status } });
+    const mutation = 'mutation ($itemId: ID!, $boardId: ID!, $columnValues: JSON!) { change_multiple_column_values(item_id: $itemId, board_id: $boardId, column_values: $columnValues) { id } }';
+    
+    const response = await fetch('https://api.monday.com/v2', {
+      method: 'POST',
+      headers: {
+        Authorization: resolveMondayToken(token),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query: mutation, variables: { itemId: String(orderId), boardId: String(getEnv('ORDERS_BOARD_ID')), columnValues } })
+    });
+
+    if (!response.ok) throw new Error(`Monday API error: ${response.status}`);
+    const resData = await response.json();
+    if (resData?.errors?.length) console.error('[updateOrderStatus] errors:', JSON.stringify(resData.errors));
+    else console.log('[updateOrderStatus] order', orderId, 'updated to', status);
+  } catch (e) {
+    console.error('[updateOrderStatus] failed:', e.message);
+  }
+}
+
+async function linkManifestToLineItem(lineItemId, manifestRecordId, token) {
+  try {
+    const colId = await getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'SupplierManifest', token);
+    if (!colId) { console.warn('[linkManifestToLineItem] SupplierManifest column not found'); return; }
+    const columnValues = JSON.stringify({ [colId]: { linkedPulseIds: [{ linkedPulseId: Number(manifestRecordId) }] } });
+    const mutation = 'mutation ($itemId: ID!, $boardId: ID!, $columnValues: JSON!) { change_multiple_column_values(item_id: $itemId, board_id: $boardId, column_values: $columnValues) { id } }';
+    
+    const response = await fetch('https://api.monday.com/v2', {
+      method: 'POST',
+      headers: {
+        Authorization: resolveMondayToken(token),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query: mutation, variables: { itemId: String(lineItemId), boardId: String(ORDER_LINE_ITEMS_BOARD_ID()), columnValues } })
+    });
+
+    if (!response.ok) throw new Error(`Monday API error: ${response.status}`);
+    const resData = await response.json();
+    if (resData?.errors?.length) console.error('[linkManifestToLineItem] errors:', JSON.stringify(resData.errors));
+  } catch (e) {
+    console.error('[linkManifestToLineItem] failed:', e.message);
+  }
+}
+
+async function updateOrderStatusIfAllGenerated(orderId, token) {
+  try {
+    const orderIdColId = await getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Order', token);
+    if (!orderIdColId) return;
+    const lineItems = await getRelatedItems(ORDER_LINE_ITEMS_BOARD_ID(), orderIdColId, [parseInt(orderId)], token);
+    if (!lineItems || lineItems.length === 0) return;
+    const allGenerated = lineItems.every((item) => getValue('Status', item) === 'Manifest Generated');
+    console.log('[updateOrderStatusIfAllGenerated] allGenerated:', allGenerated, '/', lineItems.length, 'items');
+    if (allGenerated) await updateOrderStatus(orderId, 'Manifest Generated', token);
+  } catch (e) {
+    console.error('[updateOrderStatusIfAllGenerated] failed:', e.message);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Data fetching (unchanged)
+// Data fetching
 // ─────────────────────────────────────────────────────────────────────────────
-async function getOrderWithLineitems(orderId) {
+async function getOrderWithLineitems(orderId, token) {
   const compareValue = [parseInt(orderId)];
 
   const [orderIdColId, productColId] = await Promise.all([
-    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Order'),
-    getColumnId(SUPPLIER_PRODUCT_BOARD_ID(), 'Product'),
+    getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'Order', token),
+    getColumnId(SUPPLIER_PRODUCT_BOARD_ID(), 'Product', token),
   ]);
 
   if (!orderIdColId) throw new Error(`Column "Order" not found on board ${ORDER_LINE_ITEMS_BOARD_ID()}`);
   if (!productColId) throw new Error(`Column "Product" not found on board ${SUPPLIER_PRODUCT_BOARD_ID()}`);
 
   const customerInfo = { id: null, name: '', email: '', phone: '', address: '', postal_code: '' };
-  const orderItem = await fetchItemWithColumns(orderId);
+  const orderItem = await fetchItemWithColumns(orderId, token);
   if (!orderItem) throw new Error(`Order item ${orderId} not found in monday.com`);
 
   const orderData = {
@@ -548,7 +608,7 @@ async function getOrderWithLineitems(orderId) {
   if (Array.isArray(customerId) && customerId.length > 0) customerId = customerId[0];
 
   try {
-    const customerColumns = await fetchItemWithColumns(customerId);
+    const customerColumns = await fetchItemWithColumns(customerId, token);
     if (customerColumns) {
       customerInfo.id = customerColumns.id;
       customerInfo.name = customerColumns.name;
@@ -561,7 +621,7 @@ async function getOrderWithLineitems(orderId) {
     console.error('Error fetching customer:', e.message);
   }
 
-  const orderLineitems = await getRelatedItems(ORDER_LINE_ITEMS_BOARD_ID(), orderIdColId, compareValue);
+  const orderLineitems = await getRelatedItems(ORDER_LINE_ITEMS_BOARD_ID(), orderIdColId, compareValue, token);
 
   const parsedItems = orderLineitems.map((item) => ({
     id: item.id,
@@ -589,7 +649,7 @@ async function getOrderWithLineitems(orderId) {
     .filter((id) => String(id).match(/^\d+$/))
     .map(Number);
 
-  const supplierProductItems = await getRelatedItems(SUPPLIER_PRODUCT_BOARD_ID(), productColId, allProductIds);
+  const supplierProductItems = await getRelatedItems(SUPPLIER_PRODUCT_BOARD_ID(), productColId, allProductIds, token);
 
   const productSupplierMap = {};
   for (const item of supplierProductItems) {
@@ -615,7 +675,10 @@ async function getOrderWithLineitems(orderId) {
 
   for (const pid of Object.keys(productSupplierMap)) {
     const suppliers = productSupplierMap[pid];
-    const sorted = await sortSuppliersDirectAsync(suppliers.map((s) => ({ price: s.rate, rating: s.rating, ...s })));
+    const sorted = await sortSuppliersDirectAsync(
+      suppliers.map((s) => ({ price: s.rate, rating: s.rating, ...s })),
+      token
+    );
     const selfSuppliers = sorted.filter((s) => s.self === 'v');
     const otherSuppliers = sorted.filter((s) => s.self !== 'v');
     productSupplierMap[pid] = [...selfSuppliers, ...otherSuppliers];
@@ -633,21 +696,21 @@ async function getOrderWithLineitems(orderId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// generateManifest  (unchanged orchestration, swapped PDF generator)
+// generateManifest
 // ─────────────────────────────────────────────────────────────────────────────
-async function generateManifest(orderLineItems, supplierId, supplierName, supplierAddress, courierId, courierName, customer, orderId) {
+async function generateManifest(orderLineItems, supplierId, supplierName, supplierAddress, courierId, courierName, customer, orderId, token) {
   const orders = orderLineItems.map((item) => ({
-    order_no:    item.orderNumber || 'N/A',
-    awb_no:      'N/A',
-    contents:    [item.product, item.productCode, item.sku].filter(Boolean).join(', '),
-    quantity:    item.quantity || 1,
-    unit_price:  Number(item.unitPrice || 0).toFixed(2),
+    order_no: item.orderNumber || 'N/A',
+    awb_no: 'N/A',
+    contents: [item.product, item.productCode, item.sku].filter(Boolean).join(', '),
+    quantity: item.quantity || 1,
+    unit_price: Number(item.unitPrice || 0).toFixed(2),
     total_price: (Number(item.quantity || 1) * Number(item.unitPrice || 0)).toFixed(2),
   }));
 
   const manifestRecord = await createSupplierManifestRecord(
     orders, supplierName, supplierId, courierName,
-    orderLineItems.map((i) => i.id).filter(Boolean), orderId
+    orderLineItems.map((i) => i.id).filter(Boolean), orderId, token
   );
   supplierManifestMondayRecordId = manifestRecord.id;
   console.log('[generateManifest] record created:', supplierManifestMondayRecordId);
@@ -659,7 +722,7 @@ async function generateManifest(orderLineItems, supplierId, supplierName, suppli
     orders,
     supplierName,
     supplierAddress,
-    supplierPhone: '',      // extend if available
+    supplierPhone: '',
     courierName,
     current_datetime,
   });
@@ -667,20 +730,27 @@ async function generateManifest(orderLineItems, supplierId, supplierName, suppli
   console.log('[generateManifest] PDF generated, size:', pdfBuffer.length);
   const fileName = sanitizeFilename(`${supplierName}_${courierName}_(${current_date}).pdf`);
 
-  const manifestFileColId = await getColumnId(SUPPLIER_MANIFEST_BOARD_ID(), 'Manifest File');
-  await uploadFileToSupplierManifestColumn(supplierManifestMondayRecordId, pdfBuffer, fileName, manifestFileColId);
+  const manifestFileColId = await getColumnId(SUPPLIER_MANIFEST_BOARD_ID(), 'Manifest File', token);
+  await uploadFileToSupplierManifestColumn(supplierManifestMondayRecordId, pdfBuffer, fileName, manifestFileColId, token);
 
   for (const item of orderLineItems) {
     if (item.id) {
       try {
-        const result = await updateOrderLineItem(
+        await updateOrderLineItem(
           parseInt(item.id), 'Manifest Generated', supplierId, supplierName,
-          courierId, courierName, ORDER_LINE_ITEMS_BOARD_ID()
+          courierId, courierName, ORDER_LINE_ITEMS_BOARD_ID(), supplierManifestMondayRecordId, token
         );
-        if (result?.errors?.length) console.error('updateOrderLineItem errors:', JSON.stringify(result.errors));
       } catch (e) {
         console.error('Failed to update line item', item.id, e.message);
       }
+    }
+  }
+
+  if (orderId) await updateOrderStatusIfAllGenerated(orderId, token);
+
+  for (const item of orderLineItems) {
+    if (item.id && supplierManifestMondayRecordId) {
+      await linkManifestToLineItem(item.id, supplierManifestMondayRecordId, token);
     }
   }
 
@@ -688,9 +758,9 @@ async function generateManifest(orderLineItems, supplierId, supplierName, suppli
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// generateLabel  (unchanged orchestration, swapped PDF generator)
+// generateLabel
 // ─────────────────────────────────────────────────────────────────────────────
-async function generateLabel(lineitems, supplierId, supplierName, supplierAddress, courierId, courierName, customer) {
+async function generateLabel(lineitems, supplierId, supplierName, supplierAddress, courierId, courierName, customer, token) {
   const pdfBuffers = [];
   const { current_date, current_datetime } = getISTDatetime();
 
@@ -699,17 +769,17 @@ async function generateLabel(lineitems, supplierId, supplierName, supplierAddres
       order: { order_no: item.orderNumber || 'N/A', awb_no: 'N/A' },
       customer,
       product: {
-        name:        item.product,
-        sku:         item.sku,
-        weight:      item.productWeight,
-        unit_price:  Number(item.unitPrice || 0).toFixed(2),
-        quantity:    item.quantity || 1,
+        name: item.product,
+        sku: item.sku,
+        weight: item.productWeight,
+        unit_price: Number(item.unitPrice || 0).toFixed(2),
+        quantity: item.quantity || 1,
         total_price: (Number(item.quantity || 1) * Number(item.unitPrice || 0)).toFixed(2),
       },
-      invoiceNo:       item.orderNumber || 'N/A',   // "Invoice No.: Retail00144 | Invoice Date: …"
+      invoiceNo: item.orderNumber || 'N/A',
       supplierName,
       supplierAddress,
-      supplierPhone:   '',
+      supplierPhone: '',
       courierName,
       current_datetime,
     };
@@ -719,8 +789,8 @@ async function generateLabel(lineitems, supplierId, supplierName, supplierAddres
 
   const mergedBuffer = await mergePdfs(pdfBuffers);
   const fileName = sanitizeFilename(`merged_labels_${courierName}_(${current_date}).pdf`);
-  const labelFileColId = await getColumnId(SUPPLIER_MANIFEST_BOARD_ID(), 'Label File');
-  await uploadFileToSupplierManifestColumn(supplierManifestMondayRecordId, mergedBuffer, fileName, labelFileColId);
+  const labelFileColId = await getColumnId(SUPPLIER_MANIFEST_BOARD_ID(), 'Label File', token);
+  await uploadFileToSupplierManifestColumn(supplierManifestMondayRecordId, mergedBuffer, fileName, labelFileColId, token);
 
   return lineitems.map((item) => ({ order_no: item.orderNumber || 'N/A' }));
 }

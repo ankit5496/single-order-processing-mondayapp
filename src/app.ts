@@ -3,10 +3,11 @@ import dotenv from 'dotenv';
 import bodyParser from 'body-parser';
 import path from 'path';
 
+// Load .env BEFORE requiring any api modules so process.env is populated
 dotenv.config();
 
 const REQUIRED_ENV = [
-  'MONDAY_API_KEY', 'MONDAY_API_URL',
+  'MONDAY_API_KEY',
   'ORDER_LINE_ITEMS_BOARD_ID', 'SUPPLIER_MANIFEST_BOARD_ID',
   'SUPPLIER_PRODUCT_BOARD_ID', 'ORDERS_BOARD_ID',
   'SUPPLIER_SORTING_ITEM_ID', 'COURIER_SORTING_ITEM_ID',
@@ -75,7 +76,7 @@ app.post('/api/generate-manifest', async (req, res) => {
     return res.json(results);
   } catch (e: any) {
     console.error('Error generating manifest:', e.message, e.stack);
-    return res.status(500).json({ error: e.message, stack: e.stack });
+    return res.status(500).json({ error: e.message });
   }
 });
 

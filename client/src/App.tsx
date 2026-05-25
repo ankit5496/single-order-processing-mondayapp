@@ -1,5 +1,6 @@
 import React from "react";
-import Select from "react-select";
+import Select from "react-select"; 
+import SelectComponent from "react-select";
 import mondaySdk from "monday-sdk-js";
 import { Button } from "./components/ui/button";
 import toast, { Toaster } from "react-hot-toast";
@@ -68,12 +69,6 @@ type CustomerData = {
   postal_code: string;
 };
 
-type ApiResponse = {
-  order: Order;
-  lineitems: LineItem[];
-  customer: CustomerData;
-};
-
 type GroupedManifests = {
   key: string;
   supplierId: string;
@@ -114,20 +109,23 @@ export default function OrderDetail() {
   const LOCAL_TEST = process.env.REACT_APP_LOCAL_TEST === "true";
   const LOCAL_ITEM_ID = Number(process.env.REACT_APP_LOCAL_ITEM_ID);
 
+  const jsonHeaders = { "Content-Type": "application/json" };
+
   useEffect(() => {
     if (LOCAL_TEST && !isNaN(LOCAL_ITEM_ID) && LOCAL_ITEM_ID) {
+      console.log('inside this local test');
       console.log("[Local Test] Item ID:", LOCAL_ITEM_ID);
       setItemId(LOCAL_ITEM_ID);
       fetchOrderWithLineItems(LOCAL_ITEM_ID);
       return;
     }
 
-    monday.get("context").then((res) => {
-      const context = res.data as any;
+    monday.get("context").then((contextRes) => {
+      const context = contextRes.data as any;
       if (context && "boardId" in context && "itemId" in context) {
         const id = Number(context.itemId);
-        console.log("Board ID:", Number(context.boardId));
-        console.log("Item ID:", id);
+        console.log("Order Board ID:--->", Number(context.boardId));
+        console.log("Order Item ID:---->", id);
         setItemId(id);
         fetchOrderWithLineItems(id);
       } else {
@@ -175,7 +173,7 @@ export default function OrderDetail() {
   const fetchOrderWithLineItems = async (id: number) => {
     try {
       setLoading(true);
-      const res = await fetch(`/api/order?itemId=${id}`);
+      const res = await fetch(`/api/order?itemId=${id}`, { headers: jsonHeaders });
       const text = await res.text();
       let data: any;
       try {
@@ -247,7 +245,7 @@ export default function OrderDetail() {
     try {
       const res = await fetch(`/api/get-couriers`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonHeaders,
         body: JSON.stringify(payload),
       });
       const data = await res.json();
@@ -273,7 +271,7 @@ export default function OrderDetail() {
 
       const sortedCouriers = await fetch(`/api/sort_couriers`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: jsonHeaders,
         body: JSON.stringify({ couriers }),
       });
       const sortdata = await sortedCouriers.json();
@@ -400,7 +398,7 @@ export default function OrderDetail() {
 
         const manifestResponse = await fetch(`/api/generate-manifest`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: jsonHeaders,
           body: JSON.stringify(manifestPayload),
         });
         if (!manifestResponse.ok) {
@@ -410,7 +408,7 @@ export default function OrderDetail() {
 
         const labelResponse = await fetch(`/api/generate-label`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: jsonHeaders,
           body: JSON.stringify(manifestPayload),
         });
         if (!labelResponse.ok) {
@@ -569,7 +567,7 @@ export default function OrderDetail() {
                                   "—"}
                               </span>
                             ) : (
-                              <Select
+                              <SelectComponent
                                 isClearable
                                 value={item.suppliers.find((s) => s.supplier_id === item.supplierId) || null}
                                 onChange={(option) => handleSupplierChange(item.id, option?.supplier_id || "")}
@@ -589,7 +587,7 @@ export default function OrderDetail() {
                                 {item.courierName || "—"}
                               </span>
                             ) : (
-                              <Select
+                              <SelectComponent
                                 value={item.availableCouriers?.find(
                                   (c) => String(c.courier_id) === String(item.courierId) || c.courier_name === item.courierName
                                 ) || null}
