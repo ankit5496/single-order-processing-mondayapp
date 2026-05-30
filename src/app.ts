@@ -68,11 +68,11 @@ app.post('/api/sort_couriers', async (req, res) => {
 
 app.post('/api/generate-manifest', async (req, res) => {
   try {
-    const { supplierId, supplierName, supplierAddress, courierId, courierName, customer, lineitems = [], orderId } = req.body;
+    const { supplierId, supplierName, supplierAddress, supplierPhone, courierId, courierName, customer, lineitems = [], orderId, shiprocketShipmentId, shiprocketOrderId } = req.body;
     if (!supplierId || !supplierName || !courierId) {
       return res.status(400).json({ error: 'Missing required supplier/courier details' });
     }
-    const results = await generateManifest(lineitems, supplierId, supplierName, supplierAddress, courierId, courierName, customer, orderId);
+    const results = await generateManifest(lineitems, supplierId, supplierName, supplierAddress, courierId, courierName, customer, orderId, shiprocketShipmentId, shiprocketOrderId, supplierPhone);
     return res.json(results);
   } catch (e: any) {
     console.error('Error generating manifest:', e.message, e.stack);
@@ -90,6 +90,19 @@ app.post('/api/generate-label', async (req, res) => {
     return res.json(results);
   } catch (e: any) {
     console.error('Error generating label:', e.message, e.stack);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/track-shipment', async (req, res) => {
+  const { orderId } = req.query as { orderId: string };
+  if (!orderId) return res.status(400).json({ error: 'Missing orderId' });
+  try {
+    const { trackShipment } = require(path.join(__dirname, '..', 'src', 'api', 'orders'));
+    const data = await trackShipment(orderId);
+    return res.json(data);
+  } catch (e: any) {
+    console.error('Error tracking shipment:', e.message);
     return res.status(500).json({ error: e.message });
   }
 });

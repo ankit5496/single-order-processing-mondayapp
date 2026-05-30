@@ -52,6 +52,24 @@ const headers = (token) => ({
 
 const apiUrl = () => 'https://api.monday.com/v2';
 
+async function withRetry(fn, label) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if ((e.response?.status === 503 || e.message?.includes('503')) && attempt < 2) {
+        const wait = 2000 * (attempt + 1);
+        console.warn(`[${label}] 503 rate limit, retrying in ${wait}ms...`);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+
+
 async function fetchItemWithColumns(itemId, token) {
   const query = `
     query {

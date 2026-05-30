@@ -1,5 +1,5 @@
 import React from "react";
-import Select from "react-select"; 
+// import Select from "react-select"; 
 import SelectComponent from "react-select";
 import mondaySdk from "monday-sdk-js";
 import { Button } from "./components/ui/button";
@@ -18,6 +18,8 @@ type Order = {
   description: string;
   customerPostalCode: string;
   totalPrice: string;
+  shiprocketShipmentId: string;
+  shiprocketOrderId: string;
 };
 
 type Supplier = {
@@ -390,6 +392,8 @@ export default function OrderDetail() {
           courierId: manifest.courierId,
           courierName: courier?.courier_name || "",
           orderId: order?.id || null,
+          shiprocketShipmentId: order?.shiprocketShipmentId || null,
+          shiprocketOrderId: order?.shiprocketOrderId || null,
           customer: customer_info,
           lineitems: manifest.items,
         };

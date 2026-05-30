@@ -602,6 +602,8 @@ async function getOrderWithLineitems(orderId, token) {
     totalPrice: getValue('TotalPrice', orderItem),
     customerId: getLinkedItemIds('Customers', orderItem),
     customerPostalCode: getValue('CustomerPostalCode', orderItem),
+    shiprocketShipmentId: getValue('Shiprocket Shipment ID', orderItem),
+    shiprocketOrderId: getValue('Shiprocket Order ID', orderItem),
   };
 
   let customerId = orderData.customerId;
@@ -698,7 +700,7 @@ async function getOrderWithLineitems(orderId, token) {
 // ─────────────────────────────────────────────────────────────────────────────
 // generateManifest
 // ─────────────────────────────────────────────────────────────────────────────
-async function generateManifest(orderLineItems, supplierId, supplierName, supplierAddress, courierId, courierName, customer, orderId, token) {
+async function generateManifest(orderLineItems, supplierId, supplierName, supplierAddress, courierId, courierName, customer, orderId, shiprocketShipmentId, shiprocketOrderId, supplierPhone, token) {
   const orders = orderLineItems.map((item) => ({
     order_no: item.orderNumber || 'N/A',
     awb_no: 'N/A',
@@ -754,6 +756,34 @@ async function generateManifest(orderLineItems, supplierId, supplierName, suppli
     }
   }
 
+  // ── Shiprocket: Step 1 — Update Pickup Address ────────────────────────
+  if (shiprocketOrderId) {
+    console.log('[generateManifest] Step 1: assigning pickup location for order:', shiprocketOrderId);
+    await assignPickupLocation(shiprocketOrderId, supplierName, supplierAddress, supplierPhone || '');
+  } else {
+    console.warn('[generateManifest] No shiprocketOrderId — skipping pickup location update');
+  }
+
+  // ── Shiprocket: Step 2 — Assign AWB + Generate Pickup ─────────────────
+  console.log('[generateManifest] shiprocketShipmentId:', shiprocketShipmentId, '| courierId:', courierId);
+  if (shiprocketShipmentId) {
+    console.log('[generateManifest] Step 2: calling assignAwb...');
+    const awbResult = await assignAwb(shiprocketShipmentId, courierId);
+    console.log('[generateManifest] assignAwb result:', JSON.stringify(awbResult));
+
+    const awbSuccess = awbResult?.awb_assign_status === 1;
+    if (!awbSuccess) {
+      const awbError = awbResult?.response?.data?.awb_assign_error || 'AWB assignment failed';
+      console.warn('[generateManifest] AWB assignment failed:', awbError, '— skipping pickup schedule');
+    } else {
+      console.log('[generateManifest] Step 3: AWB assigned, calling generatePickup...');
+      const pickupResult = await generatePickup(shiprocketShipmentId);
+      console.log('[generateManifest] generatePickup result:', JSON.stringify(pickupResult));
+    }
+  } else {
+    console.warn('[generateManifest] No shiprocketShipmentId — skipping AWB and pickup schedule');
+  }
+
   return { supplierName, supplierId, courierName, courierId, totalOrders: orders.length, orders };
 }
 
@@ -795,4 +825,267 @@ async function generateLabel(lineitems, supplierId, supplierName, supplierAddres
   return lineitems.map((item) => ({ order_no: item.orderNumber || 'N/A' }));
 }
 
-module.exports = { getOrderWithLineitems, generateManifest, generateLabel, checkCourierServiceability };
+
+async function assignAwb(shipmentId, courierId) {
+  try {
+    const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
+    if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    const response = await fetch('https://apiv2.shiprocket.in/v1/external/courier/assign/awb', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokenRes.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shipment_id: String(shipmentId), courier_id: String(courierId) }),
+    });
+    const data = await response.json();
+    console.log('[assignAwb] response:', JSON.stringify(data));
+    return data;
+  } catch (e) {
+    console.error('[assignAwb] failed:', e.message);
+    return null;
+  }
+}
+
+async function generatePickup(shipmentId) {
+  try {
+    const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
+    if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    const response = await fetch('https://apiv2.shiprocket.in/v1/external/courier/generate/pickup', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokenRes.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shipment_id: [String(shipmentId)] }),
+    });
+    const data = await response.json();
+    console.log('[generatePickup] response:', JSON.stringify(data));
+    return data;
+  } catch (e) {
+    console.error('[generatePickup] failed:', e.message);
+    return null;
+  }
+}
+
+
+async function trackShipment(shiprocketOrderId) {
+  try {
+    const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
+    if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    const response = await fetch(
+      `https://apiv2.shiprocket.in/v1/external/courier/track?order_id=${shiprocketOrderId}`,
+      { headers: { Authorization: `Bearer ${tokenRes.token}`, 'Content-Type': 'application/json' } }
+    );
+    const data = await response.json();
+    console.log('[trackShipment] orderId:', shiprocketOrderId, 'status:', response.status);
+    return data;
+  } catch (e) {
+    console.error('[trackShipment] failed:', e.message);
+    throw e;
+  }
+}
+
+
+async function getShiprocketPickupLocations() {
+  try {
+    const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
+    if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    const response = await fetch('https://apiv2.shiprocket.in/v1/external/settings/company/pickup', {
+      headers: { Authorization: `Bearer ${tokenRes.token}`, 'Content-Type': 'application/json' },
+    });
+    const data = await response.json();
+    console.log('[getShiprocketPickupLocations] found:', data?.data?.shipping_address?.length || 0, 'locations');
+    return data?.data?.shipping_address || [];
+  } catch (e) {
+    console.error('[getShiprocketPickupLocations] failed:', e.message);
+    return [];
+  }
+}
+
+function normalizeStr(str) {
+  return (str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function scoreAddressMatch(supplierAddress, supplierName, loc) {
+  let score = 0;
+  const sa = (supplierAddress || '').toLowerCase();
+
+  // Extract pin code from supplier address
+  const supplierPin = (sa.match(/\b(\d{6})\b/) || [])[1] || '';
+  const locPin = normalizeStr(loc.pin_code);
+
+  // Pin code match — highest weight (most reliable)
+  if (supplierPin && locPin && supplierPin === locPin) score += 50;
+
+  // City match
+  const locCity = normalizeStr(loc.city);
+  if (locCity && sa.includes(loc.city.toLowerCase())) score += 20;
+
+  // State match
+  const locState = normalizeStr(loc.state);
+  if (locState && sa.includes(loc.state.toLowerCase())) score += 15;
+
+  // Supplier name match against location name
+  const locName = normalizeStr(loc.name);
+  const supName = normalizeStr(supplierName);
+  if (supName && locName && (locName.includes(supName) || supName.includes(locName))) score += 10;
+
+  // Address words match — check if significant words from loc address appear in supplier address
+  const locAddrWords = (loc.address || '').toLowerCase().split(/[\s,]+/).filter(w => w.length > 3);
+  const matchedWords = locAddrWords.filter(w => sa.includes(w));
+  if (locAddrWords.length > 0) score += Math.round((matchedWords.length / locAddrWords.length) * 10);
+
+  // Pickup location name contains supplier name
+  const locPickup = normalizeStr(loc.pickup_location);
+  if (supName && locPickup && (locPickup.includes(supName) || supName.includes(locPickup))) score += 5;
+
+  return score;
+}
+
+function matchSupplierToPickup(supplierAddress, supplierName, pickupLocations) {
+  if (!pickupLocations || pickupLocations.length === 0) return null;
+
+  console.log('[matchSupplierToPickup] checking', pickupLocations.length, 'locations for supplier:', supplierName);
+  console.log('[matchSupplierToPickup] supplierAddress:', supplierAddress);
+
+  let bestMatch = null;
+  let bestScore = 0;
+
+  for (const loc of pickupLocations) {
+    const score = scoreAddressMatch(supplierAddress, supplierName, loc);
+    console.log(`[matchSupplierToPickup] "${loc.pickup_location}" score: ${score}`);
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = loc;
+    }
+  }
+
+  // Require minimum score of 50 (at least pin code must match)
+  if (bestScore >= 50) {
+    console.log('[matchSupplierToPickup] matched:', bestMatch.pickup_location, 'with score:', bestScore);
+    return bestMatch;
+  }
+
+  console.log('[matchSupplierToPickup] no confident match found (best score:', bestScore, ')');
+  return null;
+}
+
+function parseSupplierAddress(supplierAddress) {
+  const raw = (supplierAddress || '').trim();
+
+  // Extract 6-digit pin code
+  const pinMatch = raw.match(/\b(\d{6})\b/);
+  const pinCode = pinMatch ? pinMatch[1] : '';
+
+  // Remove pin code from string for cleaner parsing
+  const withoutPin = raw.replace(/[-–]?\s*\d{6}/, '').trim().replace(/,\s*$/, '').trim();
+
+  // Split by comma
+  const parts = withoutPin.split(',').map(s => s.trim()).filter(Boolean);
+
+  let city = '';
+  let state = '';
+  let address = '';
+
+  if (parts.length === 1) {
+    address = parts[0];
+  } else if (parts.length === 2) {
+    address = parts[0];
+    city = parts[1];
+  } else if (parts.length === 3) {
+    address = parts[0];
+    city = parts[1];
+    state = parts[2];
+  } else if (parts.length >= 4) {
+    // Last part is state, second-to-last is city, rest is address
+    state = parts[parts.length - 1];
+    city = parts[parts.length - 2];
+    address = parts.slice(0, parts.length - 2).join(', ');
+  }
+
+  // Clean up state — remove any leftover digits or dashes
+  state = state.replace(/[\d\-–]/g, '').trim();
+  // Clean up city — remove digits
+  city = city.replace(/\d/g, '').trim();
+
+  console.log('[parseSupplierAddress] raw:', raw);
+  console.log('[parseSupplierAddress] parsed ->', { address, city, state, pinCode });
+
+  return { address, city, state, pinCode };
+}
+
+async function createShiprocketPickupLocation(supplierName, supplierAddress, supplierPhone) {
+  try {
+    const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
+    if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+
+    const { address, city, state, pinCode } = parseSupplierAddress(supplierAddress);
+    const payload = {
+      pickup_location: supplierName,
+      name: supplierName,
+      email: getEnv('SHIPROCKET_EMAIL'),
+      phone: (supplierPhone || '').replace(/[^0-9]/g, '').slice(-10),
+      address,
+      address_2: '',
+      city,
+      state,
+      country: 'India',
+      pin_code: pinCode,
+      lat: '',
+      long: '',
+      vendor_name: supplierName,
+      phone_verified: true,
+    };
+    console.log('[createShiprocketPickupLocation] creating:', JSON.stringify(payload));
+
+    const response = await fetch('https://apiv2.shiprocket.in/v1/external/settings/company/addpickup', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokenRes.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    console.log('[createShiprocketPickupLocation] response:', JSON.stringify(data));
+    return data;
+  } catch (e) {
+    console.error('[createShiprocketPickupLocation] failed:', e.message);
+    return null;
+  }
+}
+
+async function updateOrderPickupLocation(shiprocketOrderId, pickupLocationName) {
+  try {
+    const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
+    if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    const response = await fetch('https://apiv2.shiprocket.in/v1/external/orders/address/pickup', {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${tokenRes.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order_id: [Number(shiprocketOrderId)], pickup_location: pickupLocationName }),
+    });
+    const data = await response.json();
+    console.log('[updateOrderPickupLocation] response:', JSON.stringify(data));
+    return data;
+  } catch (e) {
+    console.error('[updateOrderPickupLocation] failed:', e.message);
+    return null;
+  }
+}
+
+async function assignPickupLocation(shiprocketOrderId, supplierName, supplierAddress, supplierPhone) {
+  console.log('[assignPickupLocation] starting for order:', shiprocketOrderId, 'supplier:', supplierName);
+
+  // Step 1: get all pickup locations
+  const pickupLocations = await getShiprocketPickupLocations();
+
+  // Step 2: try to match supplier address
+  let matched = matchSupplierToPickup(supplierAddress, supplierName, pickupLocations);
+
+  // Step 3: if no match, create new pickup location
+  if (!matched) {
+    console.log('[assignPickupLocation] no match — creating new pickup location for:', supplierName);
+    await createShiprocketPickupLocation(supplierName, supplierAddress, supplierPhone);
+    // Use supplier name as pickup_location name
+    matched = { pickup_location: supplierName };
+  }
+
+  // Step 4: update order pickup location
+  const pickupName = matched.pickup_location;
+  console.log('[assignPickupLocation] updating order pickup to:', pickupName);
+  await updateOrderPickupLocation(shiprocketOrderId, pickupName);
+}
+
+module.exports = { getOrderWithLineitems, generateManifest, generateLabel, checkCourierServiceability, trackShipment };
