@@ -1,53 +1,22 @@
 const { EnvironmentVariablesManager } = require('@mondaycom/apps-sdk');
-const jwt = require('jsonwebtoken');
 
 const env = new EnvironmentVariablesManager();
 
 const getEnv = (key) => env.get(key) || process.env[key];
 
-// Resolves short-lived context tokens on Monday hosting vs API tokens on localhost
-// Update this function inside srcc/api/mondayUtils.js
-
-const resolveMondayToken = (headerToken) => {
-  const token = headerToken ? headerToken.trim() : null;
+// resolveMondayToken: the token from monday.get("sessionToken") is a signed JWT
+// that monday accepts directly as a Bearer token for API calls.
+const resolveMondayToken = (token) => {
   if (!token) {
-    return getEnv('MONDAY_API_KEY');
+    throw new Error('No monday token available');
   }
-
-  try {
-    const signingSecret = getEnv('MONDAY_SIGNING_SECRET');
-    if (signingSecret) {
-      // Try to decode as a Monday hosting session context token
-      const decoded = jwt.verify(token, signingSecret);
-      if (decoded) {
-        // Verified Monday Hosting Context Token
-        if (decoded.shortLivedToken) return decoded.shortLivedToken;
-        if (decoded.dat && decoded.dat.shortLivedToken) return decoded.dat.shortLivedToken;
-        
-        // Fallback to master backend key for standard views on production hosting
-        return getEnv('MONDAY_API_KEY');
-      }
-    }
-  } catch (err) {
-    // CRITICAL FIX FOR LOCALHOST:
-    // If verification fails, it means this is NOT a signed context token.
-    // It is your ACTUAL User Personal API Bearer Token (passed from localhost)!
-    // Return it directly so native fetch executes queries with your real account access.
-    return token;
-  }
-
-  return token || getEnv('MONDAY_API_KEY');
+  return token;
 };
-
-const setRequestToken = (token) => {
-  // Maintained as no-op to support any legacy code references safely without global race conditions
-};
-
-const getApiKey = () => getEnv('MONDAY_API_KEY');
 
 const headers = (token) => ({
   Authorization: resolveMondayToken(token),
   'Content-Type': 'application/json',
+  'API-Version': '2024-10',
 });
 
 const apiUrl = () => 'https://api.monday.com/v2';
@@ -358,7 +327,5 @@ module.exports = {
   sortSuppliersDirectAsync,
   sortCouriersDirect,
   getEnv,
-  getApiKey,
-  setRequestToken,
   resolveMondayToken,
 };

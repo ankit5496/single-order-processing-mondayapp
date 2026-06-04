@@ -8,6 +8,7 @@ const {
   fetchItemWithColumns,
   getRelatedItems,
   getColumnId,
+  getColumnInfo,
   getValue,
   getDisplayValue,
   getLinkedItemIds,
@@ -536,6 +537,48 @@ async function updateOrderStatus(orderId, status, token) {
   }
 }
 
+async function updateOrderAwb(orderId, awbCode, token) {
+  try {
+    console.log('[updateOrderAwb] START - orderId:', orderId, 'awbCode:', awbCode);
+    const awbColId = await getColumnId(getEnv('ORDERS_BOARD_ID'), 'Shiprocket AWB ID', token);
+    console.log('[updateOrderAwb] Column ID found:', awbColId);
+    if (!awbColId) { 
+      console.warn('[updateOrderAwb] Shiprocket AWB ID column not found'); 
+      return; 
+    }
+    const columnValues = JSON.stringify({ [awbColId]: awbCode });
+    console.log('[updateOrderAwb] Column values:', columnValues);
+    const mutation = 'mutation ($itemId: ID!, $boardId: ID!, $columnValues: JSON!) { change_multiple_column_values(item_id: $itemId, board_id: $boardId, column_values: $columnValues) { id } }';
+    const variables = { itemId: String(orderId), boardId: String(getEnv('ORDERS_BOARD_ID')), columnValues };
+    console.log('[updateOrderAwb] Mutation variables:', JSON.stringify(variables));
+    
+    const response = await fetch('https://api.monday.com/v2', {
+      method: 'POST',
+      headers: {
+        Authorization: resolveMondayToken(token),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query: mutation, variables })
+    });
+
+    console.log('[updateOrderAwb] Response status:', response.status, response.statusText);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[updateOrderAwb] Response error:', errorText);
+      throw new Error(`Monday API error: ${response.status}`);
+    }
+    const resData = await response.json();
+    console.log('[updateOrderAwb] Response data:', JSON.stringify(resData, null, 2));
+    if (resData?.errors?.length) {
+      console.error('[updateOrderAwb] GraphQL errors:', JSON.stringify(resData.errors));
+    } else {
+      console.log('[updateOrderAwb] SUCCESS - order', orderId, 'AWB updated to', awbCode);
+    }
+  } catch (e) {
+    console.error('[updateOrderAwb] Exception:', e.message, e.stack);
+  }
+}
+
 async function linkManifestToLineItem(lineItemId, manifestRecordId, token) {
   try {
     const colId = await getColumnId(ORDER_LINE_ITEMS_BOARD_ID(), 'SupplierManifest', token);
@@ -758,27 +801,63 @@ async function generateManifest(orderLineItems, supplierId, supplierName, suppli
 
   // ── Shiprocket: Step 1 — Update Pickup Address ────────────────────────
   if (shiprocketOrderId) {
-    console.log('[generateManifest] Step 1: assigning pickup location for order:', shiprocketOrderId);
+    console.log('[generateManifest] ===== STEP 1: ASSIGN PICKUP LOCATION =====');
+    console.log('[generateManifest] shiprocketOrderId:', shiprocketOrderId);
+    console.log('[generateManifest] supplierName:', supplierName);
+    console.log('[generateManifest] supplierAddress:', supplierAddress);
+    console.log('[generateManifest] supplierPhone:', supplierPhone);
     await assignPickupLocation(shiprocketOrderId, supplierName, supplierAddress, supplierPhone || '');
   } else {
     console.warn('[generateManifest] No shiprocketOrderId — skipping pickup location update');
   }
 
   // ── Shiprocket: Step 2 — Assign AWB + Generate Pickup ─────────────────
-  console.log('[generateManifest] shiprocketShipmentId:', shiprocketShipmentId, '| courierId:', courierId);
+  console.log('[generateManifest] ===== STEP 2: ASSIGN AWB =====');
+  console.log('[generateManifest] shiprocketShipmentId:', shiprocketShipmentId);
+  console.log('[generateManifest] courierId:', courierId);
+  console.log('[generateManifest] orderId:', orderId);
+  
   if (shiprocketShipmentId) {
-    console.log('[generateManifest] Step 2: calling assignAwb...');
+    console.log('[generateManifest] calling assignAwb...');
     const awbResult = await assignAwb(shiprocketShipmentId, courierId);
-    console.log('[generateManifest] assignAwb result:', JSON.stringify(awbResult));
+    console.log('[generateManifest] assignAwb returned:', JSON.stringify(awbResult, null, 2));
 
     const awbSuccess = awbResult?.awb_assign_status === 1;
+    console.log('[generateManifest] awbSuccess:', awbSuccess);
+    
     if (!awbSuccess) {
       const awbError = awbResult?.response?.data?.awb_assign_error || 'AWB assignment failed';
       console.warn('[generateManifest] AWB assignment failed:', awbError, '— skipping pickup schedule');
     } else {
-      console.log('[generateManifest] Step 3: AWB assigned, calling generatePickup...');
+      const awbCode = awbResult?.response?.data?.awb_code;
+      console.log('[generateManifest] awbCode extracted:', awbCode);
+      
+      let shipmentRecordId = null;
+      
+      if (awbCode && orderId) {
+        console.log('[generateManifest] updating order', orderId, 'with AWB:', awbCode);
+        await updateOrderAwb(orderId, awbCode, token);
+        
+        console.log('[generateManifest] creating shipment record...');
+        const shipmentRecord = await createShipmentRecord(orderId, courierId, courierName, supplierName, supplierAddress, awbCode, token);
+        shipmentRecordId = shipmentRecord.id;
+        console.log('[generateManifest] shipmentRecordId:', shipmentRecordId);
+      } else {
+        console.warn('[generateManifest] Cannot update AWB - awbCode:', awbCode, 'orderId:', orderId);
+      }
+      
+      console.log('[generateManifest] ===== STEP 3: GENERATE PICKUP =====');
       const pickupResult = await generatePickup(shiprocketShipmentId);
-      console.log('[generateManifest] generatePickup result:', JSON.stringify(pickupResult));
+      console.log('[generateManifest] generatePickup returned:', JSON.stringify(pickupResult, null, 2));
+      
+      if (pickupResult && shipmentRecordId) {
+        const pickupScheduledDate = pickupResult?.response?.pickup_scheduled_date;
+        const pickupGeneratedDate = pickupResult?.response?.pickup_generated_date?.date || new Date().toISOString();
+        console.log('[generateManifest] updating shipment pickup dates...');
+        console.log('[generateManifest] pickupScheduledDate:', pickupScheduledDate);
+        console.log('[generateManifest] pickupGeneratedDate:', pickupGeneratedDate);
+        await updateShipmentPickupDates(shipmentRecordId, pickupScheduledDate, pickupGeneratedDate, token);
+      }
     }
   } else {
     console.warn('[generateManifest] No shiprocketShipmentId — skipping AWB and pickup schedule');
@@ -828,36 +907,56 @@ async function generateLabel(lineitems, supplierId, supplierName, supplierAddres
 
 async function assignAwb(shipmentId, courierId) {
   try {
+    console.log('[assignAwb] START - shipmentId:', shipmentId, 'courierId:', courierId);
     const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
-    if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    if (!tokenRes.success) {
+      console.error('[assignAwb] Auth failed:', tokenRes.error);
+      throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    }
+    console.log('[assignAwb] Auth successful, calling Shiprocket API...');
+    const payload = { shipment_id: String(shipmentId), courier_id: String(courierId) };
+    console.log('[assignAwb] Payload:', JSON.stringify(payload));
+    
     const response = await fetch('https://apiv2.shiprocket.in/v1/external/courier/assign/awb', {
       method: 'POST',
       headers: { Authorization: `Bearer ${tokenRes.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shipment_id: String(shipmentId), courier_id: String(courierId) }),
+      body: JSON.stringify(payload),
     });
+    console.log('[assignAwb] Response status:', response.status, response.statusText);
     const data = await response.json();
-    console.log('[assignAwb] response:', JSON.stringify(data));
+    console.log('[assignAwb] Response data:', JSON.stringify(data, null, 2));
+    console.log('[assignAwb] awb_assign_status:', data?.awb_assign_status);
+    console.log('[assignAwb] awb_code:', data?.response?.data?.awb_code);
     return data;
   } catch (e) {
-    console.error('[assignAwb] failed:', e.message);
+    console.error('[assignAwb] Exception:', e.message, e.stack);
     return null;
   }
 }
 
 async function generatePickup(shipmentId) {
   try {
+    console.log('[generatePickup] START - shipmentId:', shipmentId);
     const tokenRes = await generateToken(SHIPROCKET_EMAIL(), SHIPROCKET_PASSWORD());
-    if (!tokenRes.success) throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    if (!tokenRes.success) {
+      console.error('[generatePickup] Auth failed:', tokenRes.error);
+      throw new Error('Shiprocket auth failed: ' + tokenRes.error);
+    }
+    console.log('[generatePickup] Auth successful, calling Shiprocket API...');
+    const payload = { shipment_id: [String(shipmentId)] };
+    console.log('[generatePickup] Payload:', JSON.stringify(payload));
+    
     const response = await fetch('https://apiv2.shiprocket.in/v1/external/courier/generate/pickup', {
       method: 'POST',
       headers: { Authorization: `Bearer ${tokenRes.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shipment_id: [String(shipmentId)] }),
+      body: JSON.stringify(payload),
     });
+    console.log('[generatePickup] Response status:', response.status, response.statusText);
     const data = await response.json();
-    console.log('[generatePickup] response:', JSON.stringify(data));
+    console.log('[generatePickup] Response data:', JSON.stringify(data, null, 2));
     return data;
   } catch (e) {
-    console.error('[generatePickup] failed:', e.message);
+    console.error('[generatePickup] Exception:', e.message, e.stack);
     return null;
   }
 }
@@ -1089,3 +1188,193 @@ async function assignPickupLocation(shiprocketOrderId, supplierName, supplierAdd
 }
 
 module.exports = { getOrderWithLineitems, generateManifest, generateLabel, checkCourierServiceability, trackShipment };
+
+
+function formatDateTimeForMonday(dateString) {
+  if (!dateString) return null;
+  try {
+    const date = new Date(dateString);
+    const day = date.getDate();
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const month = monthNames[date.getMonth()];
+    const year = date.getFullYear();
+    let hours = date.getHours();
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12 || 12;
+    return `${day} ${month} ${year} ${hours}:${minutes} ${ampm}`;
+  } catch (e) {
+    console.error('[formatDateTimeForMonday] failed:', e.message);
+    return null;
+  }
+}
+
+async function createShipmentRecord(orderId, courierCompanyId, courierName, shipperName, shipperAddress, awbCode, token) {
+  try {
+    console.log('[createShipmentRecord] START - orderId:', orderId);
+    console.log('[createShipmentRecord] courierCompanyId:', courierCompanyId);
+    console.log('[createShipmentRecord] courierName:', courierName);
+    console.log('[createShipmentRecord] shipperName:', shipperName);
+    console.log('[createShipmentRecord] shipperAddress:', shipperAddress);
+    console.log('[createShipmentRecord] awbCode:', awbCode);
+    
+    const shipmentsBoardId = getEnv('SHIPMENTS_BOARD_ID');
+    console.log('[createShipmentRecord] SHIPMENTS_BOARD_ID:', shipmentsBoardId);
+
+    const [ordersColId, assignedDateColId, courierIdColId, courierNameColId, shipperNameColId, shipperAddressColId] = await Promise.all([
+      getColumnId(shipmentsBoardId, 'Orders', token),
+      getColumnId(shipmentsBoardId, 'Assigned Date', token),
+      getColumnId(shipmentsBoardId, 'Courier Company Id', token),
+      getColumnId(shipmentsBoardId, 'Courier Name', token),
+      getColumnId(shipmentsBoardId, 'Shipper Company Name', token),
+      getColumnId(shipmentsBoardId, 'Shipper Address', token),
+    ]);
+
+    console.log('[createShipmentRecord] Column IDs:', {
+      ordersColId,
+      assignedDateColId,
+      courierIdColId,
+      courierNameColId,
+      shipperNameColId,
+      shipperAddressColId
+    });
+
+    const assignedDateTime = formatDateTimeForMonday(new Date().toISOString());
+    console.log('[createShipmentRecord] assignedDateTime:', assignedDateTime);
+    
+    const itemName = `Shipment - ${awbCode || 'N/A'}`;
+    console.log('[createShipmentRecord] itemName:', itemName);
+    
+    const columnValues = {};
+    if (ordersColId && orderId) {
+      columnValues[ordersColId] = { linkedPulseIds: [{ linkedPulseId: Number(orderId) }] };
+    }
+    if (assignedDateColId && assignedDateTime) {
+      columnValues[assignedDateColId] = String(assignedDateTime);
+    }
+    if (courierIdColId && courierCompanyId) {
+      columnValues[courierIdColId] = String(courierCompanyId);
+    }
+    if (courierNameColId && courierName) {
+      columnValues[courierNameColId] = String(courierName);
+    }
+    if (shipperNameColId && shipperName) {
+      columnValues[shipperNameColId] = String(shipperName);
+    }
+    if (shipperAddressColId && shipperAddress) {
+      columnValues[shipperAddressColId] = String(shipperAddress);
+    }
+
+    console.log('[createShipmentRecord] columnValues:', JSON.stringify(columnValues, null, 2));
+
+    const columnValuesStr = JSON.stringify(JSON.stringify(columnValues));
+    console.log('[createShipmentRecord] columnValuesStr:', columnValuesStr);
+    
+    const mutation = `
+      mutation {
+        create_item(
+          board_id: ${shipmentsBoardId},
+          item_name: "${itemName}",
+          column_values: ${columnValuesStr}
+        ) { id }
+      }
+    `;
+    console.log('[createShipmentRecord] mutation:', mutation);
+
+    const response = await fetch('https://api.monday.com/v2', {
+      method: 'POST',
+      headers: {
+        Authorization: resolveMondayToken(token),
+        'Content-Type': 'application/json',
+        'API-Version': '2024-10'
+      },
+      body: JSON.stringify({ query: mutation })
+    });
+
+    console.log('[createShipmentRecord] Response status:', response.status, response.statusText);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[createShipmentRecord] Response error:', errorText);
+      throw new Error(`Monday API error: ${response.status}`);
+    }
+
+    const resData = await response.json();
+    console.log('[createShipmentRecord] Response data:', JSON.stringify(resData, null, 2));
+    if (resData?.errors?.length) {
+      console.error('[createShipmentRecord] GraphQL errors:', JSON.stringify(resData.errors, null, 2));
+    }
+    const shipmentId = resData?.data?.create_item?.id;
+    console.log('[createShipmentRecord] SUCCESS - shipment record created:', shipmentId);
+    return { success: !!shipmentId, id: shipmentId };
+  } catch (e) {
+    console.error('[createShipmentRecord] Exception:', e.message, e.stack);
+    return { success: false, id: null };
+  }
+}
+
+async function updateShipmentPickupDates(shipmentRecordId, pickupScheduledDate, pickupGeneratedDate, token) {
+  try {
+    console.log('[updateShipmentPickupDates] START - shipmentRecordId:', shipmentRecordId);
+    const shipmentsBoardId = getEnv('SHIPMENTS_BOARD_ID');
+
+    const [pickupScheduledColId, pickupGeneratedColId] = await Promise.all([
+      getColumnId(shipmentsBoardId, 'Pickup Scheduled Date', token),
+      getColumnId(shipmentsBoardId, 'Pickup Generated Date', token),
+    ]);
+
+    console.log('[updateShipmentPickupDates] Column IDs:', { pickupScheduledColId, pickupGeneratedColId });
+
+    const columnValues = {};
+    if (pickupScheduledColId && pickupScheduledDate) {
+      const formatted = formatDateTimeForMonday(pickupScheduledDate);
+      console.log('[updateShipmentPickupDates] pickupScheduledDate formatted:', formatted);
+      if (formatted) {
+        columnValues[pickupScheduledColId] = String(formatted);
+      }
+    }
+    if (pickupGeneratedColId && pickupGeneratedDate) {
+      const formatted = formatDateTimeForMonday(pickupGeneratedDate);
+      console.log('[updateShipmentPickupDates] pickupGeneratedDate formatted:', formatted);
+      if (formatted) {
+        columnValues[pickupGeneratedColId] = String(formatted);
+      }
+    }
+
+    if (Object.keys(columnValues).length === 0) {
+      console.warn('[updateShipmentPickupDates] No dates to update');
+      return;
+    }
+
+    console.log('[updateShipmentPickupDates] columnValues:', JSON.stringify(columnValues, null, 2));
+
+    const mutation = 'mutation ($itemId: ID!, $boardId: ID!, $columnValues: JSON!) { change_multiple_column_values(item_id: $itemId, board_id: $boardId, column_values: $columnValues) { id } }';
+    const variables = { itemId: String(shipmentRecordId), boardId: String(shipmentsBoardId), columnValues: JSON.stringify(columnValues) };
+
+    const response = await fetch('https://api.monday.com/v2', {
+      method: 'POST',
+      headers: {
+        Authorization: resolveMondayToken(token),
+        'Content-Type': 'application/json',
+        'API-Version': '2024-10'
+      },
+      body: JSON.stringify({ query: mutation, variables })
+    });
+
+    console.log('[updateShipmentPickupDates] Response status:', response.status, response.statusText);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[updateShipmentPickupDates] Response error:', errorText);
+      throw new Error(`Monday API error: ${response.status}`);
+    }
+
+    const resData = await response.json();
+    console.log('[updateShipmentPickupDates] Response data:', JSON.stringify(resData, null, 2));
+    if (resData?.errors?.length) {
+      console.error('[updateShipmentPickupDates] GraphQL errors:', JSON.stringify(resData.errors, null, 2));
+    } else {
+      console.log('[updateShipmentPickupDates] SUCCESS - pickup dates updated');
+    }
+  } catch (e) {
+    console.error('[updateShipmentPickupDates] Exception:', e.message, e.stack);
+  }
+}

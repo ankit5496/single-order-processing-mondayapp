@@ -97,31 +97,29 @@ export default function OrderDetail() {
   const [processing, setProcessing] = useState(false);
 
   const rankLabels = ["🏆 BEST", "🥈 2ND BEST", "🥉 3RD BEST"];
-  const colors = [
-    "#28a745",
-    "#007bff",
-    "#fd7e14",
-    "#6f42c1",
-    "#e83e8c",
-    "#20c997",
-  ];
+  const colors = ["#28a745", "#007bff", "#fd7e14", "#6f42c1", "#e83e8c", "#20c997"];
 
   const monday = mondaySdk();
 
-  const LOCAL_TEST = process.env.REACT_APP_LOCAL_TEST === "true";
-  const LOCAL_ITEM_ID = Number(process.env.REACT_APP_LOCAL_ITEM_ID);
-
-  const jsonHeaders = { "Content-Type": "application/json" };
+  const apiCall = async (path: string, options: RequestInit = {}) => {
+    const sessionRes = await monday.get("sessionToken");
+    const token: string = (sessionRes.data as string) ?? "";
+    console.log("[apiCall] path:", path);
+    console.log("[apiCall] token present:", !!token);
+    console.log("[apiCall] token preview:", token ? token.substring(0, 40) + "..." : "EMPTY");
+    const response = await fetch(path, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: token,
+        ...(options.headers || {}),
+      },
+    });
+    console.log("[apiCall] response status:", response.status, response.statusText);
+    return response;
+  };
 
   useEffect(() => {
-    if (LOCAL_TEST && !isNaN(LOCAL_ITEM_ID) && LOCAL_ITEM_ID) {
-      console.log('inside this local test');
-      console.log("[Local Test] Item ID:", LOCAL_ITEM_ID);
-      setItemId(LOCAL_ITEM_ID);
-      fetchOrderWithLineItems(LOCAL_ITEM_ID);
-      return;
-    }
-
     monday.get("context").then((contextRes) => {
       const context = contextRes.data as any;
       if (context && "boardId" in context && "itemId" in context) {
@@ -175,12 +173,16 @@ export default function OrderDetail() {
   const fetchOrderWithLineItems = async (id: number) => {
     try {
       setLoading(true);
-      const res = await fetch(`/api/order?itemId=${id}`, { headers: jsonHeaders });
+      console.log("[fetchOrderWithLineItems] fetching order:", id);
+      const res = await apiCall(`/api/order?itemId=${id}`);
       const text = await res.text();
+      console.log("[fetchOrderWithLineItems] response text length:", text.length);
       let data: any;
       try {
         data = JSON.parse(text);
+        console.log("[fetchOrderWithLineItems] parsed data:", data);
       } catch {
+        console.error("[fetchOrderWithLineItems] failed to parse JSON:", text.slice(0, 100));
         throw new Error(`Server returned non-JSON response: ${text.slice(0, 100)}`);
       }
       if (!res.ok) throw new Error(data?.error || data?.stack || `Server error: ${res.status}`);
@@ -218,6 +220,7 @@ export default function OrderDetail() {
   };
 
   const handleSupplierChange = async (itemId: string, supplierId: string) => {
+    console.log("[handleSupplierChange] itemId:", itemId, "supplierId:", supplierId);
     if (!supplierId) {
       setLineItems((prev) =>
         prev.map((li) => li.id === itemId ? { ...li, supplierId: "", courierId: "", availableCouriers: [] } : li)
@@ -245,13 +248,13 @@ export default function OrderDetail() {
     console.log("[handleSupplierChange] payload:", payload);
 
     try {
-      const res = await fetch(`/api/get-couriers`, {
+      console.log("[handleSupplierChange] calling /api/get-couriers...");
+      const res = await apiCall(`/api/get-couriers`, {
         method: "POST",
-        headers: jsonHeaders,
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      console.log("courer_data--->", data);
+      console.log("[handleSupplierChange] couriers response:", data);
 
       const couriers =
         data.couriers?.data?.available_courier_companies?.map(
@@ -264,25 +267,27 @@ export default function OrderDetail() {
           })
         ) || [];
 
-      console.log("couriers--->", couriers);
+      console.log("[handleSupplierChange] mapped couriers:", couriers);
 
       if (!couriers.length) {
+        console.warn("[handleSupplierChange] no couriers available");
         toast.error("No couriers available for this supplier and destination.");
         return;
       }
 
-      const sortedCouriers = await fetch(`/api/sort_couriers`, {
+      console.log("[handleSupplierChange] calling /api/sort_couriers...");
+      const sortedCouriers = await apiCall(`/api/sort_couriers`, {
         method: "POST",
-        headers: jsonHeaders,
         body: JSON.stringify({ couriers }),
       });
       const sortdata = await sortedCouriers.json();
-      console.log("sortdata--->", sortdata);
+      console.log("[handleSupplierChange] sort response:", sortdata);
 
       const sortCouriers: Courier[] = sortdata.couriers || [];
-      console.log("sortCouriers", sortCouriers);
+      console.log("[handleSupplierChange] sorted couriers:", sortCouriers);
 
       if (!sortCouriers.length) {
+        console.warn("[handleSupplierChange] no sorted couriers available");
         toast.error("No couriers available for this route.");
         return;
       }
@@ -305,13 +310,14 @@ export default function OrderDetail() {
           };
         }
       );
+      console.log("[handleSupplierChange] ranked couriers:", rankedCouriers);
       setLineItems((prev) =>
         prev.map((li) =>
           li.id === itemId ? { ...li, availableCouriers: rankedCouriers } : li
         )
       );
     } catch (err) {
-      console.error("Error fetching couriers:", err);
+      console.error("[handleSupplierChange] error:", err);
     }
   };
 
@@ -343,20 +349,24 @@ export default function OrderDetail() {
   };
 
   const handleGenerateManifestAndLabel = async () => {
+    console.log("[handleGenerateManifestAndLabel] starting...");
     if (!lineItems.length || !customer_info) return;
 
     try {
       const pendingItems = lineItems.filter(
         (item) => item.status !== "Manifest Generated"
       );
+      console.log("[handleGenerateManifestAndLabel] pending items:", pendingItems.length);
 
       if (!pendingItems.length) {
-        console.log("All manifests are already generated!");
+        console.log("[handleGenerateManifestAndLabel] all manifests already generated");
         return;
       }
       const manifests = groupLineItemsForManifest(pendingItems);
+      console.log("[handleGenerateManifestAndLabel] grouped manifests:", manifests.length);
 
       for (const manifest of manifests) {
+        console.log("[handleGenerateManifestAndLabel] processing manifest:", manifest.key);
         const normalizedSupplierId = Array.isArray(manifest.supplierId)
           ? manifest.supplierId[0]
           : manifest.supplierId;
@@ -368,18 +378,20 @@ export default function OrderDetail() {
           const sid = Array.isArray(s.supplier_id) ? s.supplier_id[0] : s.supplier_id;
           return String(sid) === String(normalizedSupplierId);
         });
-        console.log("supplier8787---->", supplier);
+        console.log("[handleGenerateManifestAndLabel] supplier:", supplier);
 
         const courier = manifest.items[0]?.availableCouriers?.find(
           (c) => String(c.courier_id) === String(manifest.courierId)
         );
-        console.log("courier8787---->", courier);
+        console.log("[handleGenerateManifestAndLabel] courier:", courier);
 
         if (!supplier) {
+          console.error("[handleGenerateManifestAndLabel] supplier not found");
           toast.error("Could not find supplier details. Please re-select the supplier.");
           return;
         }
         if (!courier) {
+          console.error("[handleGenerateManifestAndLabel] courier not found");
           toast.error("Could not find courier details. Please re-select the courier.");
           return;
         }
@@ -398,31 +410,40 @@ export default function OrderDetail() {
           lineitems: manifest.items,
         };
 
-        console.log("manifestPayload---->", manifestPayload);
+        console.log("[handleGenerateManifestAndLabel] manifestPayload:", manifestPayload);
 
-        const manifestResponse = await fetch(`/api/generate-manifest`, {
+        console.log("[handleGenerateManifestAndLabel] calling /api/generate-manifest...");
+        const manifestResponse = await apiCall(`/api/generate-manifest`, {
           method: "POST",
-          headers: jsonHeaders,
           body: JSON.stringify(manifestPayload),
         });
+        console.log("[handleGenerateManifestAndLabel] manifest response status:", manifestResponse.status);
         if (!manifestResponse.ok) {
           const errData = await manifestResponse.json().catch(() => ({}));
+          console.error("[handleGenerateManifestAndLabel] manifest error:", errData);
           throw new Error(`Manifest generation failed: ${errData.error || manifestResponse.status}`);
         }
+        const manifestData = await manifestResponse.json();
+        console.log("[handleGenerateManifestAndLabel] manifest response data:", manifestData);
 
-        const labelResponse = await fetch(`/api/generate-label`, {
+        console.log("[handleGenerateManifestAndLabel] calling /api/generate-label...");
+        const labelResponse = await apiCall(`/api/generate-label`, {
           method: "POST",
-          headers: jsonHeaders,
           body: JSON.stringify(manifestPayload),
         });
+        console.log("[handleGenerateManifestAndLabel] label response status:", labelResponse.status);
         if (!labelResponse.ok) {
+          console.error("[handleGenerateManifestAndLabel] label generation failed");
           throw new Error(`Label generation failed: ${labelResponse.status}`);
         }
+        const labelData = await labelResponse.json();
+        console.log("[handleGenerateManifestAndLabel] label response data:", labelData);
       }
 
+      console.log("[handleGenerateManifestAndLabel] all manifests and labels generated successfully");
       toast.success("Manifests and Labels generated successfully!");
     } catch (error) {
-      console.error("Error generating manifest/label:", error);
+      console.error("[handleGenerateManifestAndLabel] error:", error);
       toast.error("Failed to generate manifest/label");
     }
   };

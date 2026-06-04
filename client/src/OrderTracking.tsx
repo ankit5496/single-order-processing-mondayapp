@@ -111,15 +111,17 @@ export default function OrderTracking() {
   const [error, setError] = useState<string | null>(null);
   const monday = mondaySdk();
 
-  const LOCAL_TEST = process.env.REACT_APP_LOCAL_TEST === "true";
-  const LOCAL_ITEM_ID = Number(process.env.REACT_APP_LOCAL_ITEM_ID);
+  const apiCall = async (path: string) => {
+    const sessionRes = await monday.get("sessionToken");
+    const token: string = (sessionRes.data as string) ?? "";
+    return fetch(path, { headers: { Authorization: token } });
+  };
 
   const fetchTracking = async (id: number) => {
     try {
       setLoading(true);
       setError(null);
-      // Step 1: get order data to read Shiprocket Order ID
-      const orderRes = await fetch(`/api/order?itemId=${id}`);
+      const orderRes = await apiCall(`/api/order?itemId=${id}`);
       const orderData = await orderRes.json();
       const shiprocketOrderId = orderData?.order?.shiprocketOrderId;
       console.log('[OrderTracking] shiprocketOrderId:', shiprocketOrderId);
@@ -127,12 +129,9 @@ export default function OrderTracking() {
         setError('No Shiprocket Order ID found for this order.');
         return;
       }
-      // Step 2: call tracking API
-      const trackRes = await fetch(`/api/track-shipment?orderId=${shiprocketOrderId}`);
+      const trackRes = await apiCall(`/api/track-shipment?orderId=${shiprocketOrderId}`);
       const trackData = await trackRes.json();
-      console.log('[OrderTracking] trackData:', trackData);
       if (!trackRes.ok) throw new Error(trackData?.error || 'Tracking failed');
-      // Shiprocket returns array — pick first element
       const td: TrackingData = Array.isArray(trackData)
         ? trackData[0]?.tracking_data
         : trackData?.tracking_data || trackData;
@@ -146,15 +145,13 @@ export default function OrderTracking() {
   };
 
   useEffect(() => {
-    if (LOCAL_TEST && LOCAL_ITEM_ID) {
-      fetchTracking(LOCAL_ITEM_ID);
-      return;
-    }
     monday.get("context").then((res) => {
       const context = res.data as any;
       if (context && "itemId" in context) {
-        const id = Number(context.itemId);
-        fetchTracking(id);
+        fetchTracking(Number(context.itemId));
+      } else {
+        setError('Item ID not available in context.');
+        setLoading(false);
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
