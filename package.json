@@ -4,7 +4,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "dev": "npx concurrently \"npx ts-node-dev --respawn --transpile-only src/app.ts\" \"cd client && npm run dev\"",
-    "dev-server": "npm run stop && npx concurrently \"cd backend-node && npm run dev\" \"npm run expose\"",
+    "dev-server": "npm run stop && npx concurrently \"npx ts-node-dev --respawn --transpile-only src/app.ts\" \"npm run expose\"",
     "build": "npx tsc && cd client && npm i && npm run build && cd ..",
     "start": "node dist/app.js",
     "expose": "mapps tunnel:create -p 8080",

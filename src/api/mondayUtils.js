@@ -1,18 +1,45 @@
-const axios = require('axios');
 const { EnvironmentVariablesManager } = require('@mondaycom/apps-sdk');
 
 const env = new EnvironmentVariablesManager();
 
 const getEnv = (key) => env.get(key) || process.env[key];
 
-const headers = () => ({
-  Authorization: getEnv('MONDAY_API_KEY'),
+// resolveMondayToken: the token from monday.get("sessionToken") is a signed JWT
+// that monday accepts directly as a Bearer token for API calls.
+const resolveMondayToken = (token) => {
+  if (!token) {
+    throw new Error('No monday token available');
+  }
+  return token;
+};
+
+const headers = (token) => ({
+  Authorization: resolveMondayToken(token),
   'Content-Type': 'application/json',
+  'API-Version': '2024-10',
 });
 
-const apiUrl = () => getEnv('MONDAY_API_URL') || 'https://api.monday.com/v2';
+const apiUrl = () => 'https://api.monday.com/v2';
 
-async function fetchItemWithColumns(itemId) {
+async function withRetry(fn, label) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if ((e.response?.status === 503 || e.message?.includes('503')) && attempt < 2) {
+        const wait = 2000 * (attempt + 1);
+        console.warn(`[${label}] 503 rate limit, retrying in ${wait}ms...`);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+
+
+async function fetchItemWithColumns(itemId, token) {
   const query = `
     query {
       items(ids: ${itemId}) {
@@ -32,21 +59,32 @@ async function fetchItemWithColumns(itemId) {
   `;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await axios.post(apiUrl(), { query }, { headers: headers() });
-      const items = res.data?.data?.items;
-      if (!items || items.length === 0) return null;
-      return items[0];
-    } catch (e) {
-      if (e.response?.status === 503 && attempt < 2) {
+      const response = await fetch(apiUrl(), {
+        method: 'POST',
+        headers: headers(token),
+        body: JSON.stringify({ query }),
+      });
+
+      if (response.status === 503 && attempt < 2) {
         await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
         continue;
       }
-      throw e;
+
+      if (!response.ok) {
+        throw new Error(`Monday API error: ${response.status} ${response.statusText}`);
+      }
+
+      const resData = await response.json();
+      const items = resData?.data?.items;
+      if (!items || items.length === 0) return null;
+      return items[0];
+    } catch (e) {
+      if (attempt === 2) throw e;
     }
   }
 }
 
-async function getRelatedItems(boardId, columnId, compareValues) {
+async function getRelatedItems(boardId, columnId, compareValues, token) {
   const query = `
     query {
       boards(ids: ${boardId}) {
@@ -72,8 +110,18 @@ async function getRelatedItems(boardId, columnId, compareValues) {
       }
     }
   `;
-  const res = await axios.post(apiUrl(), { query }, { headers: headers() });
-  const boards = res.data?.data?.boards || [];
+  const response = await fetch(apiUrl(), {
+    method: 'POST',
+    headers: headers(token),
+    body: JSON.stringify({ query }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Monday API error: ${response.status}`);
+  }
+
+  const resData = await response.json();
+  const boards = resData?.data?.boards || [];
   let items = [];
   for (const board of boards) {
     items = board?.items_page?.items || [];
@@ -83,7 +131,7 @@ async function getRelatedItems(boardId, columnId, compareValues) {
 
 const _columnCache = {};
 
-async function getColumnId(boardId, columnTitle) {
+async function getColumnId(boardId, columnTitle, token) {
   if (!_columnCache[boardId]) {
     const query = `
       query ($boardId: [ID!]) {
@@ -92,12 +140,18 @@ async function getColumnId(boardId, columnTitle) {
         }
       }
     `;
-    const res = await axios.post(
-      apiUrl(),
-      { query, variables: { boardId: String(boardId) } },
-      { headers: headers() }
-    );
-    const board = res.data?.data?.boards?.[0];
+    const response = await fetch(apiUrl(), {
+      method: 'POST',
+      headers: headers(token),
+      body: JSON.stringify({ query, variables: { boardId: String(boardId) } }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Monday API error: ${response.status}`);
+    }
+
+    const resData = await response.json();
+    const board = resData?.data?.boards?.[0];
     if (!board) throw new Error(`Board ${boardId} not found or not accessible`);
     _columnCache[boardId] = board.columns;
     console.log(`[getColumnId] cached ${_columnCache[boardId].length} columns for board ${boardId}`);
@@ -142,7 +196,7 @@ function getLinkedItemIds(title, item) {
   return null;
 }
 
-async function getWeightageValues() {
+async function getWeightageValues(token) {
   const defaultWeights = {
     courier_rating: 0.35,
     courier_delivery_days: 0.25,
@@ -151,27 +205,51 @@ async function getWeightageValues() {
     supplier_rating: 0.45,
   };
 
-  try {
-    const itemIds = [getEnv('SUPPLIER_SORTING_ITEM_ID'), getEnv('COURIER_SORTING_ITEM_ID')];
-    const query = `
-      query {
-        items(ids: [${itemIds.join(',')}]) {
-          id
-          name
-          column_values {
-            column { title }
-            id text value
-            ... on MirrorValue { display_value text value }
-            ... on BoardRelationValue { linked_item_ids display_value }
-            ... on FormulaValue { value id display_value }
-          }
+  const itemIds = [getEnv('SUPPLIER_SORTING_ITEM_ID'), getEnv('COURIER_SORTING_ITEM_ID')];
+  const query = `
+    query {
+      items(ids: [${itemIds.join(',')}]) {
+        id
+        name
+        column_values {
+          column { title }
+          id text value
+          ... on MirrorValue { display_value text value }
+          ... on BoardRelationValue { linked_item_ids display_value }
+          ... on FormulaValue { value id display_value }
         }
       }
-    `;
-    const res = await axios.post(apiUrl(), { query }, { headers: headers() });
-    const items = res.data?.data?.items || [];
+    }
+  `;
 
+  try {
+    let resData;
+
+    // Retry loop up to 3 attempts to gracefully recover from 503 status down-times
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await fetch(apiUrl(), {
+        method: 'POST',
+        headers: headers(token),
+        body: JSON.stringify({ query }),
+      });
+
+      // Handle 503 Service Unavailable with a short backoff delay
+      if (response.status === 503 && attempt < 2) {
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+        continue;
+      }
+
+      if (!response.ok) {
+        throw new Error(`Monday API error: ${response.status}`);
+      }
+
+      resData = await response.json();
+      break; // Request successful, safely break out of retry loop
+    }
+
+    const items = resData?.data?.items || [];
     const weights = { ...defaultWeights };
+
     for (const item of items) {
       if (item.name === 'Courier_Sorting') {
         weights.courier_rating = parseFloat(getValue('Rating', item)) || weights.courier_rating;
@@ -189,7 +267,7 @@ async function getWeightageValues() {
   }
 }
 
-async function sortSuppliersDirectAsync(suppliers) {
+async function sortSuppliersDirectAsync(suppliers, token) {
   if (!suppliers || suppliers.length <= 1) return suppliers;
 
   const prices = suppliers.filter((s) => s.price != null).map((s) => parseFloat(s.price));
@@ -199,7 +277,7 @@ async function sortSuppliersDirectAsync(suppliers) {
 
   const minPrice = Math.min(...prices), maxPrice = Math.max(...prices);
   const minRating = Math.min(...ratings), maxRating = Math.max(...ratings);
-  const weights = await getWeightageValues();
+  const weights = await getWeightageValues(token);
 
   return suppliers
     .map((s) => {
@@ -213,7 +291,7 @@ async function sortSuppliersDirectAsync(suppliers) {
     .sort((a, b) => b.final_score - a.final_score);
 }
 
-async function sortCouriersDirect(couriers) {
+async function sortCouriersDirect(couriers, token) {
   if (!couriers || couriers.length <= 1) return couriers;
 
   const ratings = couriers.map((c) => parseFloat(c.rating || 0));
@@ -223,7 +301,7 @@ async function sortCouriersDirect(couriers) {
   const minRating = Math.min(...ratings), maxRating = Math.max(...ratings);
   const minDays = Math.min(...days), maxDays = Math.max(...days);
   const minCharge = Math.min(...charges), maxCharge = Math.max(...charges);
-  const weights = await getWeightageValues();
+  const weights = await getWeightageValues(token);
 
   return couriers
     .map((c) => {
@@ -249,4 +327,5 @@ module.exports = {
   sortSuppliersDirectAsync,
   sortCouriersDirect,
   getEnv,
+  resolveMondayToken,
 };

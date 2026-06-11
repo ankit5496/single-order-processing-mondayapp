@@ -40,65 +40,6 @@ type TrackingData = {
   etd: string;
 };
 
-type TrackingResponse = {
-  tracking_data: TrackingData;
-};
-
-// ─── Static data (replace with API call in future) ────────────────────────────
-const STATIC_TRACKING_DATA: TrackingResponse[] = [
-  {
-    tracking_data: {
-      track_status: 1,
-      shipment_status: 42,
-      shipment_track: [
-        {
-          id: 185584215,
-          awb_code: "1091188857722",
-          courier_company_id: 10,
-          shipment_id: 168347943,
-          order_id: 168807908,
-          pickup_date: null,
-          delivered_date: null,
-          weight: "0.10",
-          packages: 1,
-          current_status: "PICKED UP",
-          delivered_to: "Mumbai",
-          destination: "Mumbai",
-          consignee_name: "Musarrat",
-          origin: "PALWAL",
-          courier_agent_details: null,
-          edd: "2021-12-27 23:23:18",
-        },
-      ],
-      shipment_track_activities: [
-        {
-          date: "2021-12-23 14:23:18",
-          status: "X-PPOM",
-          activity: "In Transit - Shipment picked up",
-          location: "Palwal_NewColony_D (Haryana)",
-          "sr-status": "42",
-        },
-        {
-          date: "2021-12-23 14:19:37",
-          status: "FMPUR-101",
-          activity: "Manifested - Pickup scheduled",
-          location: "Palwal_NewColony_D (Haryana)",
-          "sr-status": "NA",
-        },
-        {
-          date: "2021-12-23 14:19:34",
-          status: "X-UCI",
-          activity: "Manifested - Consignment Manifested",
-          location: "Palwal_NewColony_D (Haryana)",
-          "sr-status": "5",
-        },
-      ],
-      track_url: "https://shiprocket.co//tracking/1091188857722",
-      etd: "2021-12-28 10:19:35",
-    },
-  },
-];
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getStatusColor(srStatus: string): string {
   const s = parseInt(srStatus);
@@ -164,32 +105,79 @@ function getActiveStep(activities: ShipmentActivity[]): number {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function OrderTracking() {
-  const [itemId, setItemId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [trackingData, setTrackingData] = useState<TrackingData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const monday = mondaySdk();
 
-  const LOCAL_TEST = process.env.REACT_APP_LOCAL_TEST === "true";
-  const LOCAL_ITEM_ID = Number(process.env.REACT_APP_LOCAL_ITEM_ID);
+  const apiCall = async (path: string) => {
+    const sessionRes = await monday.get("sessionToken");
+    const token: string = (sessionRes.data as string) ?? "";
+    return fetch(path, { headers: { Authorization: token } });
+  };
+
+  const fetchTracking = async (id: number) => {
+    try {
+      setLoading(true);
+      setError(null);
+      const orderRes = await apiCall(`/api/order?itemId=${id}`);
+      const orderData = await orderRes.json();
+      const shiprocketOrderId = orderData?.order?.shiprocketOrderId;
+      console.log('[OrderTracking] shiprocketOrderId:', shiprocketOrderId);
+      if (!shiprocketOrderId) {
+        setError('No Shiprocket Order ID found for this order.');
+        return;
+      }
+      const trackRes = await apiCall(`/api/track-shipment?orderId=${shiprocketOrderId}`);
+      const trackData = await trackRes.json();
+      if (!trackRes.ok) throw new Error(trackData?.error || 'Tracking failed');
+      const td: TrackingData = Array.isArray(trackData)
+        ? trackData[0]?.tracking_data
+        : trackData?.tracking_data || trackData;
+      setTrackingData(td);
+    } catch (err: any) {
+      console.error('[OrderTracking] error:', err.message);
+      setError(err.message || 'Failed to load tracking data');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (LOCAL_TEST && LOCAL_ITEM_ID) {
-      setItemId(LOCAL_ITEM_ID);
-      return;
-    }
     monday.get("context").then((res) => {
       const context = res.data as any;
       if (context && "itemId" in context) {
-        setItemId(Number(context.itemId));
+        fetchTracking(Number(context.itemId));
+      } else {
+        setError('Item ID not available in context.');
+        setLoading(false);
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // TODO: replace STATIC_TRACKING_DATA with API call using itemId
-  const trackingResponse = STATIC_TRACKING_DATA[0];
-  const td = trackingResponse.tracking_data;
-  const track = td.shipment_track[0];
-  const activities = td.shipment_track_activities;
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 gap-4">
+        <div className="animate-spin rounded-full h-12 w-12 border-4 border-gray-300 border-t-blue-600" />
+        <p className="text-gray-600 font-medium">Loading tracking data...</p>
+      </div>
+    );
+  }
+
+  if (error || !trackingData) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 gap-3">
+        <AlertCircle className="w-12 h-12 text-gray-400" />
+        <p className="text-gray-600 font-medium">{error || 'No tracking data available'}</p>
+      </div>
+    );
+  }
+
+  const td = trackingData;
+  const track = td.shipment_track?.[0];
+  const activities = td.shipment_track_activities || [];
   const activeStep = getActiveStep(activities);
   const visibleActivities = expanded ? activities : activities.slice(0, 2);
   const hasMore = activities.length > 2;
@@ -205,45 +193,43 @@ export default function OrderTracking() {
               <Truck className="w-6 h-6 text-blue-600" />
               Shipment Tracking
             </div>
-            {getCurrentStatusBadge(track.current_status)}
+            {track && getCurrentStatusBadge(track.current_status)}
           </CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm pt-4">
           <div className="flex gap-2">
             <span className="font-semibold text-gray-500">AWB Number</span>
-            <span className="text-gray-800 font-mono">{track.awb_code}</span>
+            <span className="text-gray-800 font-mono">{track?.awb_code || '—'}</span>
           </div>
           <div className="flex gap-2">
             <span className="font-semibold text-gray-500">Consignee</span>
-            <span className="text-gray-800">{track.consignee_name}</span>
+            <span className="text-gray-800">{track?.consignee_name || '—'}</span>
           </div>
           <div className="flex gap-2">
             <span className="font-semibold text-gray-500">Origin</span>
-            <span className="text-gray-800">{track.origin}</span>
+            <span className="text-gray-800">{track?.origin || '—'}</span>
           </div>
           <div className="flex gap-2">
             <span className="font-semibold text-gray-500">Destination</span>
-            <span className="text-gray-800">{track.destination}</span>
+            <span className="text-gray-800">{track?.destination || '—'}</span>
           </div>
           <div className="flex gap-2">
             <span className="font-semibold text-gray-500">Weight</span>
-            <span className="text-gray-800">{track.weight} kg</span>
+            <span className="text-gray-800">{track?.weight ? `${track.weight} kg` : '—'}</span>
           </div>
           <div className="flex gap-2">
             <span className="font-semibold text-gray-500">Est. Delivery</span>
-            <span className="text-gray-800">{formatDate(track.edd)}</span>
+            <span className="text-gray-800">{track?.edd ? formatDate(track.edd) : '—'}</span>
           </div>
-          <div className="col-span-2 flex gap-2 items-center">
-            <span className="font-semibold text-gray-500">Track URL</span>
-            <a
-              href={td.track_url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-600 hover:underline flex items-center gap-1"
-            >
-              {td.track_url} <ExternalLink className="w-3 h-3" />
-            </a>
-          </div>
+          {td.track_url && (
+            <div className="col-span-2 flex gap-2 items-center">
+              <span className="font-semibold text-gray-500">Track URL</span>
+              <a href={td.track_url} target="_blank" rel="noreferrer"
+                className="text-blue-600 hover:underline flex items-center gap-1">
+                {td.track_url} <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -360,16 +346,17 @@ export default function OrderTracking() {
         </CardContent>
       </Card>
 
-      {/* ── ETD Card ── */}
-      <Card className="shadow-lg rounded-2xl border-2 border-green-200 bg-green-50">
-        <CardContent className="pt-4 pb-4 flex items-center gap-3">
-          <CheckCircle className="w-8 h-8 text-green-500 flex-shrink-0" />
-          <div>
-            <p className="font-semibold text-green-800">Estimated Time of Delivery</p>
-            <p className="text-green-700 text-sm">{formatDate(td.etd)}</p>
-          </div>
-        </CardContent>
-      </Card>
+      {td.etd && (
+        <Card className="shadow-lg rounded-2xl border-2 border-green-200 bg-green-50">
+          <CardContent className="pt-4 pb-4 flex items-center gap-3">
+            <CheckCircle className="w-8 h-8 text-green-500 flex-shrink-0" />
+            <div>
+              <p className="font-semibold text-green-800">Estimated Time of Delivery</p>
+              <p className="text-green-700 text-sm">{formatDate(td.etd)}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
     </div>
   );
